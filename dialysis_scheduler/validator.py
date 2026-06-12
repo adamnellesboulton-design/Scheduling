@@ -1,0 +1,271 @@
+"""Validation pass (Section 8).
+
+Always runs on the final schedule, even when the solver reports success.
+Produces a per-rule PASS / FAIL / INFO report with article citations, plus
+per-nurse FTE and Saturday detail for the Summary sheet.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+
+from .config import Config
+from .model import OperatingDate, saturday_dates
+from .fte import scheduled_fte
+from .scheduler import (
+    SAT_MAX_PER_9WK,
+    SAT_WINDOW_WEEKS,
+    _sat_window_bounds,
+    _sat_cap_for_span,
+)
+
+
+@dataclass
+class RuleResult:
+    rule: str
+    citation: str
+    status: str  # PASS / FAIL / INFO / WARN
+    detail: str
+
+
+@dataclass
+class NurseSummary:
+    name: str
+    target_fte: float
+    scheduled_fte: float
+    deviation: float
+    total_hours: float
+    avg_weekly_hours: float
+    saturdays_worked: int
+    saturdays_in_period: int
+    worst_9wk_sat: int
+    within_tolerance: bool
+
+
+@dataclass
+class ValidationReport:
+    rules: list = field(default_factory=list)  # list[RuleResult]
+    nurse_summaries: list = field(default_factory=list)  # list[NurseSummary]
+    max_consecutive_days: int = 0
+
+
+def _nurse_worked_dates(assignments: dict, name: str) -> set:
+    return set(assignments.get(name, {}).keys())
+
+
+def _max_consecutive_calendar_days(worked_isos: set) -> int:
+    if not worked_isos:
+        return 0
+    days = sorted(date.fromisoformat(d) for d in worked_isos)
+    best = run = 1
+    for prev, cur in zip(days, days[1:]):
+        if cur - prev == timedelta(days=1):
+            run += 1
+            best = max(best, run)
+        else:
+            run = 1
+    return best
+
+
+def _worst_rolling_9wk_sat(cfg: Config, operating, name: str, assignments) -> tuple:
+    """Return (worst_count, cap_for_that_window) over all Saturday windows."""
+    worked = _nurse_worked_dates(assignments, name)
+    sat_by_week: dict[int, list] = {}
+    for od in operating:
+        if od.is_saturday:
+            sat_by_week.setdefault(od.week_index, []).append(od.iso)
+
+    worst = 0
+    cap_used = SAT_MAX_PER_9WK
+    for (ws, we) in _sat_window_bounds(cfg.weeks):
+        cap = _sat_cap_for_span(cfg.weeks, we - ws + 1)
+        count = sum(
+            1
+            for wk in range(ws, we + 1)
+            for iso in sat_by_week.get(wk, [])
+            if iso in worked
+        )
+        if count > worst:
+            worst = count
+            cap_used = cap
+    return worst, cap_used
+
+
+def validate(cfg: Config, result) -> ValidationReport:
+    operating: list[OperatingDate] = result.operating
+    assignments = result.assignments
+    report = ValidationReport()
+
+    od_by_iso = {od.iso: od for od in operating}
+    sats = saturday_dates(operating)
+    n_saturdays = len(sats)
+
+    # --- Coverage (H1) ----------------------------------------------------
+    coverage_ok = True
+    short_days = []
+    for od in operating:
+        assigned = sum(
+            1 for name in assignments if od.iso in assignments[name]
+        )
+        if assigned != od.demand:
+            coverage_ok = False
+            short_days.append(
+                f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}"
+            )
+    report.rules.append(
+        RuleResult(
+            "Daily coverage met",
+            "Operational (H1)",
+            "PASS" if coverage_ok else "FAIL",
+            "All operating days fully staffed."
+            if coverage_ok
+            else "Under/over-staffed days: " + "; ".join(short_days),
+        )
+    )
+
+    # --- Max consecutive days (H4) ----------------------------------------
+    overall_max = 0
+    for nurse in cfg.nurses:
+        m = _max_consecutive_calendar_days(
+            _nurse_worked_dates(assignments, nurse.name)
+        )
+        overall_max = max(overall_max, m)
+    report.max_consecutive_days = overall_max
+    report.rules.append(
+        RuleResult(
+            "Max 6 consecutive scheduled days",
+            "25.06(C) (H4)",
+            "PASS" if overall_max <= 6 else "FAIL",
+            f"Longest run across roster = {overall_max} day(s) "
+            "(structurally bounded at 2 on a Mon/Wed/Fri/Sat unit).",
+        )
+    )
+
+    # --- Rolling 9-week Saturday cap (H2) ---------------------------------
+    sat_ok = True
+    worst_lines = []
+    for nurse in cfg.nurses:
+        worst, cap = _worst_rolling_9wk_sat(cfg, operating, nurse.name, assignments)
+        if worst > cap:
+            sat_ok = False
+            worst_lines.append(f"{nurse.name}: {worst} (cap {cap})")
+    report.rules.append(
+        RuleResult(
+            "Off >=3 Saturdays per rolling 9-week window",
+            "25.06(E)(i) (H2)",
+            "PASS" if sat_ok else "FAIL",
+            "All nurses within the weekend cap."
+            if sat_ok
+            else "Cap exceeded -> " + "; ".join(worst_lines),
+        )
+    )
+
+    # --- FTE within tolerance (H5) ----------------------------------------
+    fte_all_ok = True
+    fte_lines = []
+    for nurse in cfg.nurses:
+        worked = _nurse_worked_dates(assignments, nurse.name)
+        total_hours = sum(od_by_iso[i].paid_hours for i in worked if i in od_by_iso)
+        sf = scheduled_fte(total_hours, cfg.weeks)
+        dev = sf - nurse.target_fte
+        within = abs(dev) <= cfg.fte_tolerance + 1e-9
+        if not within:
+            fte_all_ok = False
+            fte_lines.append(f"{nurse.name}: {sf:.3f} (dev {dev:+.3f})")
+
+        n_sat_worked = sum(
+            1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday
+        )
+        elig_sat = sum(
+            1
+            for od in sats
+            if od.iso not in nurse.unavailable_dates and not nurse.fixed_saturdays_off
+        )
+        worst, _cap = _worst_rolling_9wk_sat(cfg, operating, nurse.name, assignments)
+        report.nurse_summaries.append(
+            NurseSummary(
+                name=nurse.name,
+                target_fte=nurse.target_fte,
+                scheduled_fte=round(sf, 3),
+                deviation=round(dev, 3),
+                total_hours=round(total_hours, 1),
+                avg_weekly_hours=round(total_hours / cfg.weeks, 2),
+                saturdays_worked=n_sat_worked,
+                saturdays_in_period=elig_sat if not nurse.fixed_saturdays_off else 0,
+                worst_9wk_sat=worst,
+                within_tolerance=within,
+            )
+        )
+    report.rules.append(
+        RuleResult(
+            "Scheduled FTE within tolerance",
+            f"26.01 + config (+/-{cfg.fte_tolerance}) (H5)",
+            "PASS" if fte_all_ok else "FAIL",
+            "All nurses within tolerance."
+            if fte_all_ok
+            else "Outside tolerance -> " + "; ".join(fte_lines),
+        )
+    )
+
+    # --- Meal-window note for D10 (informational, 26.03/26.04) ------------
+    report.rules.append(
+        RuleResult(
+            "Meal window for D10 shifts",
+            "26.03 / 26.04",
+            "INFO",
+            "D10 30-min meal must begin no later than 1230 (<=5.0h after 0730 "
+            "start). Two paid 15-min rest periods per D10; one per D5. Breaks are "
+            "not nurse-scheduled here; see the Schedule legend.",
+        )
+    )
+
+    # --- 25.05 posting check ----------------------------------------------
+    today = date.today()
+    lead_days = (cfg.start - today).days
+    if lead_days < 42:
+        posting_status = "WARN"
+        posting_detail = (
+            f"Schedule starts in {lead_days} day(s) (< 6 weeks). 25.05 requires "
+            "posting 6 weeks in advance."
+        )
+    else:
+        posting_status = "PASS"
+        posting_detail = f"Start is {lead_days} days out (>= 6 weeks)."
+    report.rules.append(
+        RuleResult("6-week posting lead time", "25.05", posting_status, posting_detail)
+    )
+    report.rules.append(
+        RuleResult(
+            "Short-notice change overtime",
+            "25.08",
+            "INFO",
+            "Changes made within 10 calendar days of a shift trigger overtime on "
+            "the first changed shift. The app flags but does not price this (Art. 27).",
+        )
+    )
+
+    # --- Documented non-conformance (25.06(D)) ----------------------------
+    report.rules.append(
+        RuleResult(
+            "Off-duty day consecutiveness",
+            "25.06(D)",
+            "INFO",
+            "Off-duty days cannot all be consecutive on a Mon/Wed/Fri/Sat unit "
+            "(Tue/Thu are isolated closure days); written employee agreement "
+            "recommended. Not solved by design.",
+        )
+    )
+
+    # --- EWD memorandum note (25.11 / 26.01) ------------------------------
+    report.rules.append(
+        RuleResult(
+            "Extended Work Day verification",
+            "25.11 / 26.01",
+            "INFO",
+            "D10 (10.0h elapsed) exceeds the 7.5h normal daily full shift; verify "
+            "against your Extended Work Day Memorandum terms.",
+        )
+    )
+
+    return report

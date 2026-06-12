@@ -1,0 +1,95 @@
+"""Smoke tests for the scheduler core (no Streamlit needed)."""
+
+import os
+import sys
+from datetime import date, timedelta
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dialysis_scheduler.config import default_config, Config, default_operating_shifts
+from dialysis_scheduler.fte import achievable_fte_menu, max_achievable_fte, scheduled_fte
+from dialysis_scheduler.scheduler import generate_schedule
+from dialysis_scheduler.validator import validate
+from dialysis_scheduler.excel_export import build_workbook, output_filename
+
+
+def _monday(weeks_out=8):
+    today = date.today()
+    days_ahead = (0 - today.weekday()) % 7
+    start = today + timedelta(days=days_ahead, weeks=weeks_out)
+    return start.isoformat()
+
+
+def test_fte_menu():
+    cfg = default_config(_monday())
+    menu = achievable_fte_menu(cfg)
+    ftes = [o.fte for o in menu]
+    assert ftes == sorted(ftes)
+    assert len(ftes) == len(set(ftes)), "FTE menu must be deduped"
+    assert max_achievable_fte(cfg) == 0.89, max_achievable_fte(cfg)
+    # designated-available meal raises the cap to 0.93
+    cfg.meal_designated_available = True
+    assert max_achievable_fte(cfg) == 0.93
+    print(f"FTE menu ({len(menu)} options): {[o.label for o in menu]}")
+
+
+def test_generate_and_validate():
+    cfg = default_config(_monday())
+    res = generate_schedule(cfg)
+    print("method:", res.method, "status:", res.status, "feasible:", res.feasible)
+    for m in res.messages:
+        print("  msg:", m)
+    assert res.feasible, res.messages + res.binding_constraints
+    report = validate(cfg, res)
+    statuses = {r.rule: r.status for r in report.rules}
+    print("rule statuses:", statuses)
+    # Hard-rule rows must not FAIL.
+    hard = [
+        "Daily coverage met",
+        "Max 6 consecutive scheduled days",
+        "Off >=3 Saturdays per rolling 9-week window",
+        "Scheduled FTE within tolerance",
+    ]
+    for h in hard:
+        assert statuses[h] == "PASS", f"{h} -> {statuses[h]}"
+    assert report.max_consecutive_days <= 6
+
+    for s in report.nurse_summaries:
+        print(f"  {s.name}: target {s.target_fte} sched {s.scheduled_fte} "
+              f"dev {s.deviation} sats {s.saturdays_worked}/{s.saturdays_in_period}")
+
+
+def test_excel_output():
+    cfg = default_config(_monday())
+    res = generate_schedule(cfg)
+    report = validate(cfg, res)
+    wb = build_workbook(cfg, res, report)
+    assert wb.sheetnames == ["Schedule", "Summary", "Compliance", "Config"]
+    fn = output_filename(cfg)
+    out = os.path.join(os.path.dirname(__file__), fn)
+    wb.save(out)
+    print("wrote", out, os.path.getsize(out), "bytes")
+
+
+def test_infeasible_saturday_precheck():
+    cfg = default_config(_monday())
+    # Demand far exceeds Saturday capacity.
+    cfg.demand["Sat"] = 6
+    cfg.nurses = cfg.nurses[:3]
+    res = generate_schedule(cfg)
+    print("infeasible test:", res.status, res.method)
+    assert not res.feasible or res.method == "greedy"
+    if not res.feasible:
+        assert res.messages, "should explain why"
+        print("  ", res.messages[0])
+
+
+if __name__ == "__main__":
+    test_fte_menu()
+    print("--- generate/validate ---")
+    test_generate_and_validate()
+    print("--- excel ---")
+    test_excel_output()
+    print("--- infeasible ---")
+    test_infeasible_saturday_precheck()
+    print("\nALL SMOKE TESTS PASSED")
