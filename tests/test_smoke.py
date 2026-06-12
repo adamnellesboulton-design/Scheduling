@@ -14,8 +14,9 @@ from dialysis_scheduler.excel_export import build_workbook, output_filename
 
 
 def _monday(weeks_out=8):
+    # The rotation now starts on a Friday (weekday 4).
     today = date.today()
-    days_ahead = (0 - today.weekday()) % 7
+    days_ahead = (4 - today.weekday()) % 7
     start = today + timedelta(days=days_ahead, weeks=weeks_out)
     return start.isoformat()
 
@@ -45,18 +46,21 @@ def test_generate_and_validate():
     print("rule statuses:", statuses)
     # Hard-rule rows must not FAIL.
     hard = [
-        "Daily coverage met",
+        "Daily coverage (weekday >= demand, Saturday exact)",
         "Max 6 consecutive scheduled days",
         "Off >=3 Saturdays per rolling 9-week window",
-        "Scheduled FTE within tolerance",
+        "Everyone works >=1 Saturday per month",
     ]
     for h in hard:
         assert statuses[h] == "PASS", f"{h} -> {statuses[h]}"
+    # Default roster is sized to hit its shift counts exactly.
+    assert statuses["Shift-count targets met (D10 + D5 per line)"] == "PASS"
     assert report.max_consecutive_days <= 6
 
     for s in report.nurse_summaries:
-        print(f"  {s.name}: target {s.target_fte} sched {s.scheduled_fte} "
-              f"dev {s.deviation} sats {s.saturdays_worked}/{s.saturdays_in_period}")
+        print(f"  {s.name}: D10 {s.scheduled_d10}/{s.target_d10} "
+              f"D5 {s.scheduled_d5}/{s.target_d5} fte {s.scheduled_fte} "
+              f"sats {s.saturdays_worked}/{s.saturdays_in_period}")
 
 
 def test_excel_output():

@@ -187,25 +187,28 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
 def _build_summary_sheet(wb: Workbook, report):
     ws = wb.create_sheet("Summary")
     headers = [
-        "Nurse", "Target FTE", "Scheduled FTE", "Deviation", "Total hrs",
-        "Avg hrs/wk", "Sats worked", "Sats in period", "Worst 9-wk Sat",
-        "Within tol?",
+        "Nurse", "D10 (sched/target)", "D5 (sched/target)", "Counts met",
+        "Sched FTE", "Total hrs", "Avg hrs/wk", "Sats worked", "Sats in period",
+        "Worst 9-wk Sat",
     ]
     for j, h in enumerate(headers, start=1):
         c = ws.cell(1, j, value=h)
         _style_cell(c, FILL_HEADER, WHITE_BOLD)
-        ws.column_dimensions[get_column_letter(j)].width = 14
+        ws.column_dimensions[get_column_letter(j)].width = 16
     for r, s in enumerate(report.nurse_summaries, start=2):
+        counts_met = (s.scheduled_d10 == s.target_d10
+                      and s.scheduled_d5 == s.target_d5)
         vals = [
-            s.name, s.target_fte, s.scheduled_fte, s.deviation, s.total_hours,
-            s.avg_weekly_hours, s.saturdays_worked, s.saturdays_in_period,
-            s.worst_9wk_sat, "YES" if s.within_tolerance else "NO",
+            s.name, f"{s.scheduled_d10}/{s.target_d10}",
+            f"{s.scheduled_d5}/{s.target_d5}", "YES" if counts_met else "NO",
+            s.scheduled_fte, s.total_hours, s.avg_weekly_hours,
+            s.saturdays_worked, s.saturdays_in_period, s.worst_9wk_sat,
         ]
         for j, v in enumerate(vals, start=1):
             c = ws.cell(r, j, value=v)
             fill = None
-            if j == 10:
-                fill = FILL_PASS if s.within_tolerance else FILL_FAIL
+            if j == 4:
+                fill = FILL_PASS if counts_met else FILL_INFO
             _style_cell(c, fill, align=Alignment(
                 horizontal="left" if j == 1 else "center"))
     ws.freeze_panes = "A2"
@@ -289,8 +292,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     c = ws.cell(r, 1, value="Roster")
     c.font = BOLD
     r += 1
-    hdr = ["Name", "Target FTE", "FTE flex", "Job share", "Fixed Sat off",
-           "Seniority", "Preferences", "Unavailable dates"]
+    hdr = ["Name", "D10", "D5", "FTE (derived)", "FTE flex", "Job share",
+           "Fixed Sat off", "Seniority", "Preferences", "Unavailable dates"]
     for j, h in enumerate(hdr, start=1):
         cc = ws.cell(r, j, value=h)
         _style_cell(cc, FILL_HEADER, WHITE_BOLD)
@@ -308,13 +311,15 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
         if nurse.pref_off_fri:
             prefs.append("off Fri")
         ws.cell(r, 1, value=nurse.name)
-        ws.cell(r, 2, value=nurse.target_fte)
-        ws.cell(r, 3, value=nurse.tolerance(cfg.fte_tolerance))
-        ws.cell(r, 4, value=nurse.job_share_group or "-")
-        ws.cell(r, 5, value="yes" if nurse.fixed_saturdays_off else "no")
-        ws.cell(r, 6, value=nurse.seniority_rank)
-        ws.cell(r, 7, value=", ".join(prefs) if prefs else "-")
-        ws.cell(r, 8, value=", ".join(nurse.unavailable_dates))
+        ws.cell(r, 2, value=nurse.target_d10)
+        ws.cell(r, 3, value=nurse.target_d5)
+        ws.cell(r, 4, value=nurse.target_fte)
+        ws.cell(r, 5, value=nurse.tolerance(cfg.fte_tolerance))
+        ws.cell(r, 6, value=nurse.job_share_group or "-")
+        ws.cell(r, 7, value="yes" if nurse.fixed_saturdays_off else "no")
+        ws.cell(r, 8, value=nurse.seniority_rank)
+        ws.cell(r, 9, value=", ".join(prefs) if prefs else "-")
+        ws.cell(r, 10, value=", ".join(nurse.unavailable_dates))
         r += 1
 
 

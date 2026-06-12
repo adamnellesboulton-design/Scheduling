@@ -17,7 +17,6 @@ from dialysis_scheduler.config import (
     DEFAULT_CONFIG_PATH,
     default_config,
 )
-from dialysis_scheduler.fte import achievable_fte_menu, max_achievable_fte
 from dialysis_scheduler.model import build_operating_dates
 from dialysis_scheduler.scheduler import generate_schedule
 from dialysis_scheduler.validator import validate
@@ -73,9 +72,9 @@ def sidebar():
 
     # Schedule period.
     st.sidebar.subheader("Schedule period")
-    start = st.sidebar.date_input("Start date (must be a Monday)", value=cfg.start)
-    if start.weekday() != 0:
-        st.sidebar.error("Start date must be a Monday (Section 3.1).")
+    start = st.sidebar.date_input("Start date (must be a Friday)", value=cfg.start)
+    if start.weekday() != 4:
+        st.sidebar.error("Start date must be a Friday — the rotation starts Friday.")
     weeks = st.sidebar.number_input(
         "Rotation length (weeks)", min_value=6, max_value=52,
         value=int(cfg.weeks), step=1,
@@ -114,35 +113,27 @@ def roster_editor():
     cfg = _cfg()
     st.subheader("Nurse roster")
 
-    menu = achievable_fte_menu(cfg)
-    max_ach = max_achievable_fte(cfg)
     st.caption(
-        "Enter each nurse's **target FTE** (their contracted line). The "
-        f"generator schedules each nurse within **±{cfg.fte_tolerance:.2f}** of it, "
-        "averaged over the rotation. The achievable-pattern menu below is a guide "
-        f"— the most a single line can reach on unit operating hours is "
-        f"**{max_ach:.2f}** (full-time 1.0 is unreachable here)."
+        "Set each line's number of **10-hour weekday shifts (D10, 0–40)** and "
+        "**5-hour Saturday shifts (D5, 0–10)** over the rotation — these counts are "
+        "the primary target and take priority over the FTE flex. The **FTE** column "
+        "is derived from the counts (read-only). Per-line **preferences** are soft "
+        "and resolved by **seniority** (rank 1 wins). Give two lines the same "
+        "**Job share** label to stop them ever working the same day. Everyone works "
+        "≥1 Saturday per month."
     )
-    with st.expander("Achievable FTE patterns (for reference)"):
-        st.dataframe(
-            pd.DataFrame(
-                [{"FTE": o.fte, "Pattern": o.label.split(" - ", 1)[1]} for o in menu]
-            ),
-            hide_index=True, width="stretch",
-        )
 
-    st.caption(
-        "Per-line **preferences** are soft and resolved by **seniority** when they "
-        "conflict (rank 1 wins). **FTE flex** defaults to the sidebar value but can "
-        "be overridden per line. Give two lines the same **Job share** label to "
-        "stop them ever working the same day. Saturdays are balanced by FTE first."
-    )
+    d10p, satp = cfg.d10_paid(), cfg.sat_paid()
+    denom = cfg.weekly_full_time_hours * cfg.weeks
 
     rows = []
     for n in cfg.nurses:
+        hrs = n.target_d10 * d10p + n.target_d5 * satp
         rows.append({
             "name": n.name,
-            "target_fte": float(n.target_fte),
+            "d10": int(n.target_d10),
+            "d5": int(n.target_d5),
+            "fte": round(hrs / denom, 3) if denom else 0.0,
             "fte_flex": float(n.fte_tolerance) if n.fte_tolerance is not None
             else float(cfg.fte_tolerance),
             "job_share": n.job_share_group,
@@ -163,10 +154,17 @@ def roster_editor():
         width="stretch",
         column_config={
             "name": st.column_config.TextColumn("Name", required=True),
-            "target_fte": st.column_config.NumberColumn(
-                "Target FTE", min_value=0.0, max_value=1.0, step=0.01,
-                format="%.2f",
-                help="The nurse's contracted FTE; scheduled within its flex.",
+            "d10": st.column_config.NumberColumn(
+                "D10 shifts", min_value=0, max_value=40, step=1,
+                help="Number of 10-hour weekday shifts over the rotation (0–40).",
+            ),
+            "d5": st.column_config.NumberColumn(
+                "D5 shifts", min_value=0, max_value=10, step=1,
+                help="Number of 5-hour Saturday shifts over the rotation (0–10).",
+            ),
+            "fte": st.column_config.NumberColumn(
+                "FTE (derived)", disabled=True, format="%.3f",
+                help="Computed from the shift counts; not directly editable.",
             ),
             "fte_flex": st.column_config.NumberColumn(
                 "FTE flex ±", min_value=0.0, max_value=0.30, step=0.01,
@@ -217,17 +215,20 @@ def roster_editor():
             continue
         dates_raw = str(r.get("unavailable_dates") or "").strip()
         dates = _parse_dates(dates_raw)
-        try:
-            tf = round(float(r["target_fte"]), 2)
-        except (TypeError, ValueError):
-            tf = 0.0
+
+        def _int(v, default=0):
+            try:
+                return int(round(float(v)))
+            except (TypeError, ValueError):
+                return default
         try:
             flex = round(float(r["fte_flex"]), 2)
         except (TypeError, ValueError):
             flex = float(cfg.fte_tolerance)
         new_nurses.append(Nurse(
             name=name,
-            target_fte=tf,
+            target_d10=_int(r.get("d10")),
+            target_d5=_int(r.get("d5")),
             fixed_saturdays_off=bool(r["fixed_saturdays_off"]),
             seniority_rank=int(r["seniority_rank"]) if pd.notna(r["seniority_rank"]) else 1,
             unavailable_dates=dates,
@@ -240,30 +241,35 @@ def roster_editor():
             pref_off_fri=bool(r["pref_off_fri"]),
         ))
     cfg.nurses = new_nurses
+    cfg.apply_derived_ftes()
 
-    # Warn about targets the unit's hours cannot reach within the line's flex.
-    unreachable = [
-        n.name for n in cfg.nurses
-        if n.target_fte - n.tolerance(cfg.fte_tolerance) > max_ach + 1e-9
-    ]
-    if unreachable:
-        st.warning(
-            f"⚠️ Target FTE unreachable on unit hours for: {', '.join(unreachable)}. "
-            f"The most a single line can reach is {max_ach:.2f} (full-time 1.0 is "
-            "not attainable on Mon/Wed/Fri/Sat hours). These nurses will be "
-            "scheduled as close as possible.",
+    # Sanity check: requested D10/D5 counts vs available seats in the rotation.
+    op = build_operating_dates(cfg)
+    total_wd = sum(1 for o in op if not o.is_saturday)
+    total_sat = sum(1 for o in op if o.is_saturday)
+    sum_d10 = sum(n.target_d10 for n in cfg.nurses)
+    sum_d5 = sum(n.target_d5 for n in cfg.nurses)
+    sat_seats = sum(o.demand for o in op if o.is_saturday)
+    wd_seats = sum(o.demand for o in op if not o.is_saturday)
+    notes = []
+    if sum_d5 != sat_seats:
+        notes.append(
+            f"Saturday: requested D5 total = {sum_d5} but the rotation has "
+            f"{sat_seats} Saturday seats ({total_sat} Saturdays × demand). "
+            "These must match for every line to hit its D5 count."
         )
-
-    # Show each nurse's nearest achievable pattern as a hint.
-    if cfg.nurses and menu:
-        def nearest(fte):
-            o = min(menu, key=lambda o: abs(o.fte - fte))
-            return o.label.split(" - ", 1)[1]
-        chips = " · ".join(
-            f"**{n.name}** {n.target_fte:.2f} (~{nearest(n.target_fte)})"
-            for n in cfg.nurses
+    if sum_d10 < wd_seats:
+        notes.append(
+            f"Weekday: requested D10 total = {sum_d10} is below the {wd_seats} "
+            "weekday seats needed — coverage will fall short."
         )
-        st.caption(chips)
+    elif sum_d10 > wd_seats:
+        notes.append(
+            f"Weekday: requested D10 total = {sum_d10} exceeds {wd_seats} weekday "
+            f"seats — {sum_d10 - wd_seats} extra weekday shift(s) will be scheduled."
+        )
+    if notes:
+        st.info("ℹ️ " + "  \n".join(notes))
 
 
 def _parse_dates(raw: str) -> list[str]:
@@ -300,14 +306,18 @@ def generate_section():
             icon="⚠️",
         )
 
-    if st.button("⚙️ Generate schedule", type="primary", width="stretch"):
-        if cfg.start.weekday() != 0:
-            st.error("Start date must be a Monday. Fix it in the sidebar.")
+    st.caption(
+        "Nothing is scheduled until you press **GO**. Enter all parameters and the "
+        "roster first, then click."
+    )
+    if st.button("🟢 GO — generate schedule", type="primary", width="stretch"):
+        if cfg.start.weekday() != 4:
+            st.error("Start date must be a Friday. Fix it in the sidebar.")
             return
         if not cfg.nurses:
             st.error("Add at least one nurse to the roster.")
             return
-        with st.spinner("Solving (CP-SAT, 30s limit)…"):
+        with st.spinner("Solving…"):
             result = generate_schedule(cfg)
             report = validate(cfg, result) if result.operating else None
         st.session_state.result = result
@@ -316,6 +326,7 @@ def generate_section():
     result = st.session_state.get("result")
     report = st.session_state.get("report")
     if result is None:
+        st.info("Configure the parameters and roster above, then press GO.")
         return
 
     if not result.feasible and result.method == "none":
@@ -331,9 +342,8 @@ def generate_section():
 
     # Feasible (possibly greedy / relaxed).
     method_msg = {
-        "cp-sat": "✅ Solved with CP-SAT at base FTE tolerance.",
-        "cp-sat-relaxed": "⚠️ Solved with CP-SAT after relaxing FTE tolerance to ±0.13.",
-        "greedy": "⚠️ CP-SAT infeasible — greedy fallback used.",
+        "cp-sat": "✅ Solved with CP-SAT.",
+        "greedy": "⚠️ CP-SAT infeasible — greedy fallback used (see diagnostics).",
     }.get(result.method, result.status)
     (st.success if result.method == "cp-sat" else st.warning)(method_msg)
     for m in result.messages:
@@ -364,12 +374,15 @@ def generate_section():
     if report:
         st.markdown("#### Per-nurse summary")
         sdf = pd.DataFrame([{
-            "Nurse": s.name, "Target": s.target_fte, "Scheduled": s.scheduled_fte,
-            "Deviation": s.deviation, "Total hrs": s.total_hours,
+            "Nurse": s.name,
+            "D10": f"{s.scheduled_d10}/{s.target_d10}",
+            "D5": f"{s.scheduled_d5}/{s.target_d5}",
+            "Counts met": "✅" if (s.scheduled_d10 == s.target_d10
+                                   and s.scheduled_d5 == s.target_d5) else "⚠️",
+            "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
             "Avg hrs/wk": s.avg_weekly_hours,
             "Sats": f"{s.saturdays_worked}/{s.saturdays_in_period}",
             "Worst 9-wk Sat": s.worst_9wk_sat,
-            "In tol?": "✅" if s.within_tolerance else "❌",
         } for s in report.nurse_summaries])
         st.dataframe(sdf, hide_index=True, width="stretch")
 

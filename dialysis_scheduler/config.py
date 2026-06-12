@@ -58,10 +58,18 @@ class ShiftDef:
 
 @dataclass
 class Nurse:
-    """A roster member."""
+    """A roster member.
+
+    The primary targets are explicit shift counts over the rotation:
+    `target_d10` (number of 10-hour weekday shifts) and `target_d5` (number of
+    5-hour Saturday shifts). `target_fte` is derived from those counts for
+    display / secondary reporting and is kept in sync by Config.apply_derived_ftes.
+    """
 
     name: str
-    target_fte: float
+    target_fte: float = 0.0  # derived from the shift counts (see above)
+    target_d10: int = 0  # desired # of 10-hour weekday shifts (0-40)
+    target_d5: int = 0  # desired # of 5-hour Saturday shifts (0-10)
     fixed_saturdays_off: bool = False  # 25.06(B)/(E) waiver
     seniority_rank: int = 1  # 1 = most senior; conflict resolution (25.03 ethos)
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
@@ -79,6 +87,9 @@ class Nurse:
 
     def tolerance(self, default: float) -> float:
         return self.fte_tolerance if self.fte_tolerance is not None else default
+
+    def target_hours(self, d10_paid: float, sat_paid: float) -> float:
+        return self.target_d10 * d10_paid + self.target_d5 * sat_paid
 
 
 @dataclass
@@ -110,6 +121,22 @@ class Config:
             if s.weekday == weekday:
                 return s
         return None
+
+    def d10_paid(self) -> float:
+        s = self.shift_for_weekday(0)
+        return s.paid_hours(self.meal_designated_available) if s else 9.5
+
+    def sat_paid(self) -> float:
+        s = self.shift_for_weekday(5)
+        return s.paid_hours(self.meal_designated_available) if s else 5.0
+
+    def apply_derived_ftes(self) -> None:
+        """Recompute each nurse's target_fte from their shift counts."""
+        denom = self.weekly_full_time_hours * self.weeks
+        d10p, satp = self.d10_paid(), self.sat_paid()
+        for n in self.nurses:
+            hours = n.target_hours(d10p, satp)
+            n.target_fte = round(hours / denom, 3) if denom else 0.0
 
     def demand_for(self, week_index: int, weekday_name: str) -> int:
         """Demand for a given (0-based) week and weekday, honouring overrides."""
@@ -188,36 +215,44 @@ def default_operating_shifts() -> list[ShiftDef]:
 def default_nurses() -> list[Nurse]:
     """The unit roster, in seniority order, pre-populated for the app.
 
-    Targets are sized to be satisfiable against the default demand
-    (Mon/Wed/Fri = 4, Sat = 2) -- over 12 weeks the unit needs 144 weekday and
-    24 Saturday shifts, and these five lines sum to roughly that within flex.
+    Shift-count targets are sized to match the default demand over 12 weeks
+    (Mon/Wed/Fri = 4 -> 144 D10 shifts; Sat = 2 -> 24 D5 shifts) so the default
+    schedule needs no extra coverage. (FTE is derived from the counts.)
     """
     return [
-        Nurse("Kathleen", 0.83, seniority_rank=1),
-        Nurse("Adam", 0.76, seniority_rank=2),
-        Nurse("Joane", 0.63, seniority_rank=3),
-        Nurse("Leslie", 0.57, seniority_rank=4),
-        Nurse("Kaitlyn", 0.51, seniority_rank=5),
+        Nurse("Kathleen", target_d10=30, target_d5=6, seniority_rank=1),
+        Nurse("Adam", target_d10=30, target_d5=5, seniority_rank=2),
+        Nurse("Joane", target_d10=30, target_d5=5, seniority_rank=3),
+        Nurse("Leslie", target_d10=27, target_d5=4, seniority_rank=4),
+        Nurse("Kaitlyn", target_d10=27, target_d5=4, seniority_rank=5),
     ]
+
+
+START_WEEKDAY = 4  # Friday: the rotation starts on a Friday
+
+
+def next_start_day(today: Optional[date] = None) -> date:
+    """The next rotation-start weekday (Friday) on/after today."""
+    today = today or date.today()
+    days_ahead = (START_WEEKDAY - today.weekday()) % 7
+    return today.fromordinal(today.toordinal() + days_ahead)
 
 
 def default_config(start_date: Optional[str] = None) -> Config:
     """Build a fully-populated default Config.
 
-    If no start date is supplied, the next Monday on/after today is used.
+    If no start date is supplied, the next Friday on/after today is used.
     """
     if start_date is None:
-        today = date.today()
-        # 0 = Monday
-        days_ahead = (0 - today.weekday()) % 7
-        start = today.fromordinal(today.toordinal() + days_ahead)
-        start_date = start.isoformat()
-    return Config(
+        start_date = next_start_day().isoformat()
+    cfg = Config(
         start_date=start_date,
         weeks=12,
         operating_shifts=default_operating_shifts(),
         nurses=default_nurses(),
     )
+    cfg.apply_derived_ftes()
+    return cfg
 
 
 ALLOWED_WEEKS = [6, 9, 12, 18]

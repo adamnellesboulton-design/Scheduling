@@ -1,12 +1,13 @@
-"""Schedule generation (Sections 5-7).
+"""Schedule generation.
 
-CP-SAT (OR-Tools) builds the master schedule under hard constraints H1-H6 and
-optimizes the weighted soft objectives of Section 6. If no feasible solution
-is found, FTE tolerance is relaxed; failing that a diagnostic pass identifies
-the binding requirement and a greedy fallback produces a best-effort schedule.
+CP-SAT (OR-Tools) builds the master schedule under the hard constraints
+(coverage, Saturday cap, job share, >=1 Saturday/month, ...) and optimizes the
+weighted soft objectives -- chiefly hitting each line's requested D10/D5 shift
+counts. If no feasible solution is found, a diagnostic pass identifies the
+binding requirement and a greedy fallback produces a best-effort schedule.
 
 All hours are carried in integer half-hour units inside the model (9.5h -> 19,
-5.0h -> 10, 10.0h -> 20) because CP-SAT is integer-only.
+5.0h -> 10) because CP-SAT is integer-only.
 """
 
 from __future__ import annotations
@@ -28,17 +29,20 @@ from .model import (
 
 # Soft-objective weights, descending priority.
 #
-# FTE-proportional Saturday balance is the MOST IMPORTANT objective and
-# dominates everything else. Below it: keep low-FTE lines working regularly,
-# honour per-line preferences (resolved by seniority), then consistency (a
-# stable repeating weekly line) and weekday equity. Clustering / consecutive
-# days off is an opt-in line preference, not a global objective.
-W_SAT_EQUITY = 8000  # penalty per Saturday off the FTE-proportional fair share
-W_THREE_OF_FOUR = 2000  # low-FTE lines: strong push to work >=3 of every 4 weeks
+# Hitting each line's requested SHIFT COUNTS (D10 weekday + D5 Saturday) is the
+# primary objective and is prioritized over the FTE flex. Saturday counts carry
+# the most weight. Below the counts: minimize weekday over-staffing (extras are
+# tolerated off Saturday but avoided where possible), keep low-FTE lines working
+# regularly, honour per-line preferences (by seniority), then consistency and
+# weekday equity. FTE deviation is a minor secondary smoother.
+W_SHIFT_D5 = 9000  # penalty per Saturday shift off the requested D5 count
+W_SHIFT_D10 = 5000  # penalty per weekday shift off the requested D10 count
+W_THREE_OF_FOUR = 1500  # low-FTE lines: push to work >=3 of every 4 weeks
+W_EXTRA = 600  # penalty per extra (over-demand) nurse on a weekday
 W_PREF = 450  # per honoured line-preference unit, scaled (0,1] by seniority
 W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
 W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
-W_FTE_DEV = 4  # penalty per half-hour of FTE deviation inside the band
+W_FTE_DEV = 2  # minor penalty per half-hour of derived-FTE deviation
 W_SENIORITY_TIE = 1  # tie-break: senior nurses get first pick of off-Saturdays
 
 # Lines below this FTE should work in >=3 of every rolling 4 weeks (soft).
@@ -46,7 +50,9 @@ LOW_FTE_THRESHOLD = 0.30
 THREE_OF_FOUR_WINDOW = 4
 THREE_OF_FOUR_MIN_ACTIVE = 3
 
-RELAX_EXTRA = 0.05  # extra FTE flex added to every line if the base solve fails
+# Everyone (not waived) works >=1 Saturday per rolling 4-week window (H9).
+SAT_PER_MONTH_WINDOW = 4
+
 # The deterministic time limit governs the stopping point (reproducible). The
 # wall-clock cap is a pure safety valve set well above it so it never fires on
 # normal hardware and therefore never injects nondeterminism.
@@ -154,6 +160,43 @@ def coverage_feasibility_check(
     return PreCheck(ok, msgs)
 
 
+def sat_per_month_feasibility_check(
+    cfg: Config, operating: list[OperatingDate]
+) -> PreCheck:
+    """Every non-waived nurse must get >=1 Saturday per rolling 4-week window (H9).
+
+    Infeasible if a window has fewer Saturday seats than non-waived nurses.
+    """
+    weeks = cfg.weeks
+    n_required = sum(1 for n in cfg.nurses if not n.fixed_saturdays_off)
+    sat_seats_by_week: dict[int, int] = {}
+    for od in operating:
+        if od.is_saturday:
+            sat_seats_by_week[od.week_index] = (
+                sat_seats_by_week.get(od.week_index, 0) + od.demand
+            )
+    if weeks >= SAT_PER_MONTH_WINDOW:
+        windows = [
+            (ws, ws + SAT_PER_MONTH_WINDOW - 1)
+            for ws in range(0, weeks - SAT_PER_MONTH_WINDOW + 1)
+        ]
+    else:
+        windows = [(0, weeks - 1)]
+    msgs = []
+    ok = True
+    for (ws, we) in windows:
+        seats = sum(sat_seats_by_week.get(wk, 0) for wk in range(ws, we + 1))
+        if n_required > seats:
+            ok = False
+            msgs.append(
+                f"Weeks {ws + 1}-{we + 1}: {n_required} nurses each need a Saturday "
+                f"but only {seats} Saturday seats exist in that month. Raise Saturday "
+                "demand, waive some lines off Saturdays, or shorten the window."
+            )
+            break  # one message is enough
+    return PreCheck(ok, msgs)
+
+
 # --- CP-SAT model ----------------------------------------------------------
 
 
@@ -178,8 +221,6 @@ def _sat_cap_for_span(weeks: int, span_weeks: int) -> int:
 def _solve_cpsat(
     cfg: Config,
     operating: list[OperatingDate],
-    extra_tol: float,
-    relaxed: bool,
 ) -> ScheduleResult:
     model = cp_model.CpModel()
     nurses = cfg.nurses
@@ -192,10 +233,20 @@ def _solve_cpsat(
             if nurse_eligible_for(nurse, od):
                 x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
-    # H1: daily coverage equality.
+    # H1: daily coverage. Saturday is exact (no extras allowed); weekdays must
+    # meet demand but may run an extra nurse, which is penalized in the
+    # objective so extras only appear where they help hit shift counts.
+    extra_terms = []
     for oi, od in enumerate(operating):
         vars_for_day = [x[(ni, oi)] for ni in range(len(nurses)) if (ni, oi) in x]
-        model.Add(sum(vars_for_day) == od.demand)
+        if od.is_saturday:
+            model.Add(sum(vars_for_day) == od.demand)
+        else:
+            model.Add(sum(vars_for_day) >= od.demand)
+            if vars_for_day:
+                extra = model.NewIntVar(0, len(vars_for_day), f"extra_{oi}")
+                model.Add(extra == sum(vars_for_day) - od.demand)
+                extra_terms.append(extra)
 
     # H6 is structural (one var per nurse-day). H3 handled by var omission.
     # H4 is structurally impossible to violate (longest run = Fri-Sat).
@@ -235,64 +286,78 @@ def _solve_cpsat(
             if len(day_vars) > 1:
                 model.Add(sum(day_vars) <= 1)
 
-    # H5: scheduled FTE within +/- tolerance, in half-hour units.
+    # H9: everyone (not waived off Saturdays) works >= 1 Saturday per rolling
+    # 4-week window ("at least one Saturday per month").
+    if weeks >= SAT_PER_MONTH_WINDOW:
+        sat_windows_4 = [
+            (ws, ws + SAT_PER_MONTH_WINDOW - 1)
+            for ws in range(0, weeks - SAT_PER_MONTH_WINDOW + 1)
+        ]
+    else:
+        sat_windows_4 = [(0, weeks - 1)]
+    for ni, nurse in enumerate(nurses):
+        if nurse.fixed_saturdays_off:
+            continue
+        for (ws, we) in sat_windows_4:
+            window_vars = [
+                x[(ni, oi)]
+                for wk in range(ws, we + 1)
+                for oi in sat_indices_by_week.get(wk, [])
+                if (ni, oi) in x
+            ]
+            if window_vars:
+                model.Add(sum(window_vars) >= 1)
+
+    # Per-nurse worked hours (half-hour units) -- derived FTE smoother only.
     period_full = WEEKLY_FULL_TIME_HOURS * weeks
     nurse_hours_expr = {}
     for ni, nurse in enumerate(nurses):
-        expr = sum(
+        nurse_hours_expr[ni] = sum(
             x[(ni, oi)] * half_hours(operating[oi].paid_hours)
             for oi in range(len(operating))
             if (ni, oi) in x
         )
-        nurse_hours_expr[ni] = expr
-        # Per-line FTE flex (defaults to the config-wide tolerance), plus any
-        # extra relaxation applied this pass.
-        tol_n = nurse.tolerance(cfg.fte_tolerance) + extra_tol
-        # Bound the band *strictly inside* the exact float tolerance band so the
-        # float-precision validator can never flag a rounding-only violation:
-        # lower bound rounds up, upper bound rounds down (in half-hour units).
-        lower_hh = math.ceil((nurse.target_fte - tol_n) * period_full * 2)
-        upper_hh = math.floor((nurse.target_fte + tol_n) * period_full * 2)
-        model.Add(expr >= max(0, lower_hh))
-        model.Add(expr <= upper_hh)
 
     # --- Soft objective terms ---------------------------------------------
     obj_terms = []
 
+    # Weekday over-staffing (extras) -- tolerated but minimized.
+    for extra in extra_terms:
+        obj_terms.append(W_EXTRA * extra)
+
     sats = saturday_dates(operating)
-    total_sat_demand = sum(od.demand for od in sats)
-    # Non-exempt = can work at least one Saturday.
-    sat_count: dict[int, object] = {}
-    eligible_sat_nurses = []
-    weight_sum = 0.0
+    max_sat = len(sats)
+    n_wd_days = sum(1 for od in operating if not od.is_saturday)
+
+    # 1. Shift-count matching (PRIMARY): hit each line's requested number of D10
+    #    weekday shifts and D5 Saturday shifts. L1 deviation, Saturdays weighted
+    #    highest. This is prioritized over the FTE flex.
     for ni, nurse in enumerate(nurses):
-        n_elig_sat = sum(
-            1 for oi, od in enumerate(operating) if od.is_saturday and (ni, oi) in x
+        d10_actual = sum(
+            x[(ni, oi)]
+            for oi, od in enumerate(operating)
+            if not od.is_saturday and (ni, oi) in x
         )
-        if n_elig_sat > 0:
-            eligible_sat_nurses.append(ni)
-            weight_sum += max(nurse.target_fte, 1e-6)
-        sat_count[ni] = sum(
+        d5_actual = sum(
             x[(ni, oi)]
             for oi, od in enumerate(operating)
             if od.is_saturday and (ni, oi) in x
         )
+        d10_dev = model.NewIntVar(0, n_wd_days + nurse.target_d10, f"d10dev_{ni}")
+        model.Add(d10_dev >= d10_actual - nurse.target_d10)
+        model.Add(d10_dev >= nurse.target_d10 - d10_actual)
+        obj_terms.append(W_SHIFT_D10 * d10_dev)
 
-    # 1. Saturday equity: L1 deviation from FTE-proportional fair share.
-    for ni in eligible_sat_nurses:
-        nurse = nurses[ni]
-        fair = total_sat_demand * max(nurse.target_fte, 1e-6) / weight_sum
-        fair_int = int(round(fair))
-        dev = model.NewIntVar(0, len(sats) + fair_int, f"satdev_{ni}")
-        model.Add(dev >= sat_count[ni] - fair_int)
-        model.Add(dev >= fair_int - sat_count[ni])
-        obj_terms.append(W_SAT_EQUITY * dev)
+        d5_dev = model.NewIntVar(0, max_sat + nurse.target_d5, f"d5dev_{ni}")
+        model.Add(d5_dev >= d5_actual - nurse.target_d5)
+        model.Add(d5_dev >= nurse.target_d5 - d5_actual)
+        obj_terms.append(W_SHIFT_D5 * d5_dev)
 
         # Seniority tie-break: senior (low rank) nurses get first pick of
-        # off-Saturdays -> small extra penalty for them working a Saturday.
+        # off-Saturdays -> tiny extra penalty for them working a Saturday.
         max_rank = max((nn.seniority_rank for nn in nurses), default=1)
         senior_weight = max_rank - nurse.seniority_rank + 1
-        obj_terms.append(W_SENIORITY_TIE * senior_weight * sat_count[ni])
+        obj_terms.append(W_SENIORITY_TIE * senior_weight * d5_actual)
 
     # 2. Weekday equity within FTE class (balance each weekday across equals).
     weekday_codes = [s.weekday for s in cfg.operating_shifts if s.weekday != 5]
@@ -351,9 +416,12 @@ def _solve_cpsat(
                 model.Add(diff >= b_expr - a_expr)
                 obj_terms.append(W_PATTERN * diff)
 
-    # 4. FTE deviation (L1 in half-hours, even within tolerance band).
+    # 4. Derived-FTE deviation (minor smoother): keep worked hours near the hours
+    #    implied by the requested shift counts.
+    d10p_hh = half_hours(cfg.d10_paid())
+    satp_hh = half_hours(cfg.sat_paid())
     for ni, nurse in enumerate(nurses):
-        target_hh = half_hours(nurse.target_fte * period_full)
+        target_hh = nurse.target_d10 * d10p_hh + nurse.target_d5 * satp_hh
         max_hh = half_hours(period_full)
         dev = model.NewIntVar(0, max_hh + target_hh, f"ftedev_{ni}")
         model.Add(dev >= nurse_hours_expr[ni] - target_hh)
@@ -462,22 +530,18 @@ def _solve_cpsat(
     status_name = solver.StatusName(status)
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         assignments = _extract_assignments(cfg, operating, x, solver)
-        drifted = _drifted_nurses(cfg, operating, assignments)
         return ScheduleResult(
             feasible=True,
-            method="cp-sat-relaxed" if relaxed else "cp-sat",
+            method="cp-sat",
             status=status_name,
             assignments=assignments,
             operating=operating,
-            tolerance_used=extra_tol,
-            drifted_nurses=drifted if relaxed else [],
         )
     return ScheduleResult(
         feasible=False,
-        method="cp-sat-relaxed" if relaxed else "cp-sat",
+        method="cp-sat",
         status=status_name,
         operating=operating,
-        tolerance_used=extra_tol,
     )
 
 
@@ -677,46 +741,31 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 
 
 def generate_schedule(cfg: Config) -> ScheduleResult:
-    """Full Section 7 generation flow."""
+    """Full generation flow."""
+    cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
     operating = build_operating_dates(cfg)
 
     # Cheap pre-checks first.
     cov = coverage_feasibility_check(cfg, operating)
     sat = saturday_feasibility_check(cfg, operating)
-    if not cov.ok or not sat.ok:
+    month = sat_per_month_feasibility_check(cfg, operating)
+    if not cov.ok or not sat.ok or not month.ok:
         diag = _diagnose(cfg, operating)
         return ScheduleResult(
             feasible=False,
             method="none",
             status="PRECHECK_INFEASIBLE",
             operating=operating,
-            messages=cov.messages + sat.messages,
+            messages=cov.messages + sat.messages + month.messages,
             binding_constraints=diag,
         )
 
-    # 1. CP-SAT at each line's base flex.
-    res = _solve_cpsat(cfg, operating, extra_tol=0.0, relaxed=False)
+    # 1. CP-SAT.
+    res = _solve_cpsat(cfg, operating)
     if res.feasible:
         return res
 
-    # 2. Relax every line's flex by +0.05 to reach feasibility.
-    res2 = _solve_cpsat(cfg, operating, extra_tol=RELAX_EXTRA, relaxed=True)
-    if res2.feasible:
-        res2.messages.append(
-            f"Each line's FTE flex was widened by +{RELAX_EXTRA} to reach "
-            "feasibility (26.01 averaging)."
-        )
-        if res2.drifted_nurses:
-            res2.messages.append(
-                "Nurses drifted beyond base tolerance: "
-                + ", ".join(
-                    f"{name} (FTE {sf:+.3f}, dev {dev:+.3f})"
-                    for name, sf, dev in res2.drifted_nurses
-                )
-            )
-        return res2
-
-    # 3. Diagnostic pass + greedy fallback.
+    # 2. Diagnostic pass + greedy fallback.
     diag = _diagnose(cfg, operating)
     greedy = _greedy(cfg, operating)
     greedy.binding_constraints = diag + greedy.binding_constraints

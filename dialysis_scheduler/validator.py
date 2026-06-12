@@ -16,6 +16,7 @@ from .fte import scheduled_fte
 from .scheduler import (
     SAT_MAX_PER_9WK,
     SAT_WINDOW_WEEKS,
+    SAT_PER_MONTH_WINDOW,
     LOW_FTE_THRESHOLD,
     THREE_OF_FOUR_WINDOW,
     THREE_OF_FOUR_MIN_ACTIVE,
@@ -44,6 +45,10 @@ class NurseSummary:
     saturdays_in_period: int
     worst_9wk_sat: int
     within_tolerance: bool
+    target_d10: int = 0
+    scheduled_d10: int = 0
+    target_d5: int = 0
+    scheduled_d5: int = 0
 
 
 @dataclass
@@ -104,26 +109,36 @@ def validate(cfg: Config, result) -> ValidationReport:
     sats = saturday_dates(operating)
     n_saturdays = len(sats)
 
-    # --- Coverage (H1) ----------------------------------------------------
+    # --- Coverage (H1): weekdays >= demand (extras OK), Saturday == demand --
     coverage_ok = True
-    short_days = []
+    bad_days = []
+    extras = []
+    total_extra = 0
     for od in operating:
         assigned = sum(
             1 for name in assignments if od.iso in assignments[name]
         )
-        if assigned != od.demand:
-            coverage_ok = False
-            short_days.append(
-                f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}"
-            )
+        if od.is_saturday:
+            if assigned != od.demand:
+                coverage_ok = False
+                bad_days.append(f"{od.iso} (Sat): {assigned}/{od.demand}")
+        else:
+            if assigned < od.demand:
+                coverage_ok = False
+                bad_days.append(f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}")
+            elif assigned > od.demand:
+                total_extra += assigned - od.demand
+                extras.append(f"{od.iso} (+{assigned - od.demand})")
+    detail = "All operating days meet demand"
+    detail += f"; {total_extra} extra weekday shift(s): {', '.join(extras)}." if extras else "."
+    if not coverage_ok:
+        detail = "Demand not met / Saturday over-staffed: " + "; ".join(bad_days)
     report.rules.append(
         RuleResult(
-            "Daily coverage met",
+            "Daily coverage (weekday >= demand, Saturday exact)",
             "Operational (H1)",
             "PASS" if coverage_ok else "FAIL",
-            "All operating days fully staffed."
-            if coverage_ok
-            else "Under/over-staffed days: " + "; ".join(short_days),
+            detail,
         )
     )
 
@@ -193,7 +208,66 @@ def validate(cfg: Config, result) -> ValidationReport:
         )
     )
 
-    # --- FTE within tolerance (H5) ----------------------------------------
+    # --- Everyone works >=1 Saturday per month (H9) -----------------------
+    sat_by_week_iso: dict[int, list] = {}
+    for od in operating:
+        if od.is_saturday:
+            sat_by_week_iso.setdefault(od.week_index, []).append(od.iso)
+    if cfg.weeks >= SAT_PER_MONTH_WINDOW:
+        windows4 = [
+            (ws, ws + SAT_PER_MONTH_WINDOW - 1)
+            for ws in range(0, cfg.weeks - SAT_PER_MONTH_WINDOW + 1)
+        ]
+    else:
+        windows4 = [(0, cfg.weeks - 1)]
+    h9_ok = True
+    h9_bad = []
+    for nurse in cfg.nurses:
+        if nurse.fixed_saturdays_off:
+            continue
+        worked = _nurse_worked_dates(assignments, nurse.name)
+        for (ws, we) in windows4:
+            got = sum(
+                1 for wk in range(ws, we + 1)
+                for iso in sat_by_week_iso.get(wk, []) if iso in worked
+            )
+            if got < 1:
+                h9_ok = False
+                h9_bad.append(f"{nurse.name}: 0 Saturdays in weeks {ws + 1}-{we + 1}")
+                break
+    report.rules.append(
+        RuleResult(
+            "Everyone works >=1 Saturday per month",
+            "Unit policy (H9)",
+            "PASS" if h9_ok else "FAIL",
+            "All non-waived lines have a Saturday in every 4-week window."
+            if h9_ok else "Gaps -> " + "; ".join(h9_bad),
+        )
+    )
+
+    # --- Shift-count targets met (primary) --------------------------------
+    sc_ok = True
+    sc_lines = []
+    for nurse in cfg.nurses:
+        worked = _nurse_worked_dates(assignments, nurse.name)
+        d10 = sum(1 for i in worked if i in od_by_iso and not od_by_iso[i].is_saturday)
+        d5 = sum(1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday)
+        if d10 != nurse.target_d10 or d5 != nurse.target_d5:
+            sc_ok = False
+            sc_lines.append(
+                f"{nurse.name}: D10 {d10}/{nurse.target_d10}, D5 {d5}/{nurse.target_d5}"
+            )
+    report.rules.append(
+        RuleResult(
+            "Shift-count targets met (D10 + D5 per line)",
+            "Unit policy (primary)",
+            "PASS" if sc_ok else "WARN",
+            "Every line hits its requested shift counts."
+            if sc_ok else "Off target -> " + "; ".join(sc_lines),
+        )
+    )
+
+    # --- FTE within flex (secondary to shift counts) ----------------------
     fte_all_ok = True
     fte_lines = []
     for nurse in cfg.nurses:
@@ -209,6 +283,9 @@ def validate(cfg: Config, result) -> ValidationReport:
 
         n_sat_worked = sum(
             1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday
+        )
+        n_d10 = sum(
+            1 for i in worked if i in od_by_iso and not od_by_iso[i].is_saturday
         )
         elig_sat = sum(
             1
@@ -228,16 +305,20 @@ def validate(cfg: Config, result) -> ValidationReport:
                 saturdays_in_period=elig_sat if not nurse.fixed_saturdays_off else 0,
                 worst_9wk_sat=worst,
                 within_tolerance=within,
+                target_d10=nurse.target_d10,
+                scheduled_d10=n_d10,
+                target_d5=nurse.target_d5,
+                scheduled_d5=n_sat_worked,
             )
         )
     report.rules.append(
         RuleResult(
-            "Scheduled FTE within tolerance",
-            f"26.01 + config (default +/-{cfg.fte_tolerance}, per-line) (H5)",
-            "PASS" if fte_all_ok else "FAIL",
-            "All nurses within their line flex."
+            "Derived FTE within flex (secondary)",
+            f"26.01 + config (default +/-{cfg.fte_tolerance}, per-line)",
+            "PASS" if fte_all_ok else "WARN",
+            "All lines within their FTE flex (derived from shift counts)."
             if fte_all_ok
-            else "Outside tolerance -> " + "; ".join(fte_lines),
+            else "Outside flex (shift counts take priority) -> " + "; ".join(fte_lines),
         )
     )
 

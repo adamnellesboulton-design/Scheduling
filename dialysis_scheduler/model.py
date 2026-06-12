@@ -33,13 +33,20 @@ class OperatingDate:
 
 
 def build_operating_dates(cfg: Config) -> list[OperatingDate]:
-    """Materialize every operating date in the period in chronological order."""
+    """Materialize every operating date in the period in chronological order.
+
+    Weeks are 7-day blocks anchored to the rotation start weekday (a Friday),
+    so each block still contains the four operating days (Fri, Sat, Mon, Wed)
+    even though the rotation no longer starts on a Monday.
+    """
     out: list[OperatingDate] = []
     start = cfg.start
+    start_wd = start.weekday()
     for wk in range(cfg.weeks):
-        week_monday = start + timedelta(weeks=wk)
+        block_start = start + timedelta(weeks=wk)
         for shift in sorted(cfg.operating_shifts, key=lambda s: s.weekday):
-            d = week_monday + timedelta(days=shift.weekday)
+            offset = (shift.weekday - start_wd) % 7
+            d = block_start + timedelta(days=offset)
             out.append(
                 OperatingDate(
                     d=d,
