@@ -63,8 +63,19 @@ class Nurse:
     name: str
     target_fte: float
     fixed_saturdays_off: bool = False  # 25.06(B)/(E) waiver
-    seniority_rank: int = 1  # 1 = most senior; tie-breaking only (25.03 ethos)
+    seniority_rank: int = 1  # 1 = most senior; conflict resolution (25.03 ethos)
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
+    # Per-line FTE flex (± tolerance). None -> use the config-wide default.
+    fte_tolerance: Optional[float] = None
+    # Line preferences (soft, resolved by seniority).
+    pref_nonconsec_sat: bool = False  # avoid back-to-back Saturdays
+    pref_clustered: bool = False  # prefer worked days grouped (e.g. Fri+Sat)
+    pref_off_mon: bool = False  # prefer Mondays off
+    pref_off_wed: bool = False  # prefer Wednesdays off
+    pref_off_fri: bool = False  # prefer Fridays off
+
+    def tolerance(self, default: float) -> float:
+        return self.fte_tolerance if self.fte_tolerance is not None else default
 
 
 @dataclass

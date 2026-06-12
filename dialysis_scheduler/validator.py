@@ -16,6 +16,9 @@ from .fte import scheduled_fte
 from .scheduler import (
     SAT_MAX_PER_9WK,
     SAT_WINDOW_WEEKS,
+    LOW_FTE_THRESHOLD,
+    THREE_OF_FOUR_WINDOW,
+    THREE_OF_FOUR_MIN_ACTIVE,
     _sat_window_bounds,
     _sat_cap_for_span,
 )
@@ -169,10 +172,11 @@ def validate(cfg: Config, result) -> ValidationReport:
         total_hours = sum(od_by_iso[i].paid_hours for i in worked if i in od_by_iso)
         sf = scheduled_fte(total_hours, cfg.weeks)
         dev = sf - nurse.target_fte
-        within = abs(dev) <= cfg.fte_tolerance + 1e-9
+        line_tol = nurse.tolerance(cfg.fte_tolerance)
+        within = abs(dev) <= line_tol + 1e-9
         if not within:
             fte_all_ok = False
-            fte_lines.append(f"{nurse.name}: {sf:.3f} (dev {dev:+.3f})")
+            fte_lines.append(f"{nurse.name}: {sf:.3f} (dev {dev:+.3f}, flex ±{line_tol})")
 
         n_sat_worked = sum(
             1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday
@@ -200,13 +204,49 @@ def validate(cfg: Config, result) -> ValidationReport:
     report.rules.append(
         RuleResult(
             "Scheduled FTE within tolerance",
-            f"26.01 + config (+/-{cfg.fte_tolerance}) (H5)",
+            f"26.01 + config (default +/-{cfg.fte_tolerance}, per-line) (H5)",
             "PASS" if fte_all_ok else "FAIL",
-            "All nurses within tolerance."
+            "All nurses within their line flex."
             if fte_all_ok
             else "Outside tolerance -> " + "; ".join(fte_lines),
         )
     )
+
+    # --- Low-FTE lines: 3 of every 4 weeks active (soft target) -----------
+    low_lines = [n for n in cfg.nurses if n.target_fte < LOW_FTE_THRESHOLD]
+    if low_lines:
+        week_active: dict[str, list] = {}
+        for nurse in cfg.nurses:
+            worked = _nurse_worked_dates(assignments, nurse.name)
+            flags = [False] * cfg.weeks
+            for od in operating:
+                if od.iso in worked:
+                    flags[od.week_index] = True
+            week_active[nurse.name] = flags
+
+        worst_lines = []
+        all_ok = True
+        for nurse in low_lines:
+            flags = week_active[nurse.name]
+            worst = THREE_OF_FOUR_MIN_ACTIVE
+            for ws in range(0, max(1, cfg.weeks - THREE_OF_FOUR_WINDOW + 1)):
+                window = flags[ws:ws + THREE_OF_FOUR_WINDOW]
+                worst = min(worst, sum(window))
+            if worst < THREE_OF_FOUR_MIN_ACTIVE:
+                all_ok = False
+                worst_lines.append(f"{nurse.name}: worst window {worst}/4 active")
+        report.rules.append(
+            RuleResult(
+                "Low-FTE lines active >=3 of every 4 weeks",
+                "Unit policy (soft)",
+                "PASS" if all_ok else "WARN",
+                f"Applies to lines below {LOW_FTE_THRESHOLD:.2f} FTE: "
+                + (", ".join(n.name for n in low_lines))
+                + ". "
+                + ("All meet the 3-of-4 target."
+                   if all_ok else "Below target -> " + "; ".join(worst_lines)),
+            )
+        )
 
     # --- Meal-window note for D10 (informational, 26.03/26.04) ------------
     report.rules.append(
@@ -215,8 +255,10 @@ def validate(cfg: Config, result) -> ValidationReport:
             "26.03 / 26.04",
             "INFO",
             "D10 30-min meal must begin no later than 1230 (<=5.0h after 0730 "
-            "start). Two paid 15-min rest periods per D10; one per D5. Breaks are "
-            "not nurse-scheduled here; see the Schedule legend.",
+            "start). Two paid 15-min rest periods per D10; one per D5. Paid hours "
+            "assume the 30-min unpaid meal (D10 = 9.5h); a missed meal is paid as "
+            "overtime (Art. 27, flagged not priced). Breaks are not nurse-scheduled "
+            "here; see the Schedule legend.",
         )
     )
 

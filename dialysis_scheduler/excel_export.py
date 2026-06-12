@@ -160,9 +160,9 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
     legend_row = count_row + 2
     legend = [
         ("LEGEND", BOLD),
-        ("D10 = 0730-1730 (10.0h elapsed). Paid: "
-         + ("10.0h (designated-available meal)" if cfg.meal_designated_available
-            else "9.5h (unpaid 30-min meal)"), None),
+        ("D10 = 0730-1730 (10.0h elapsed, 9.5h paid with the 30-min unpaid "
+         "meal). A missed meal is paid as overtime (Art. 27, flagged not priced).",
+         None),
         ("D5 = 0730-1230 (5.0h, paid). No meal period required (26.03(A) "
          "triggers only beyond 5 consecutive hours).", None),
         ("Blank = off.  LV = unavailable/approved leave.", None),
@@ -265,12 +265,13 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
            ", ".join(f"{k}={v}" for k, v in cfg.demand.items()))
     if cfg.weekly_demand_override:
         r = kv(r, "Weekly demand overrides", str(cfg.weekly_demand_override))
-    r = kv(r, "Meal designated-available", str(cfg.meal_designated_available))
-    r = kv(r, "FTE tolerance (base)", cfg.fte_tolerance)
+    r = kv(r, "Meal handling", "30-min unpaid meal (D10 = 9.5h paid); "
+                               "missed meals paid as OT (Art. 27)")
+    r = kv(r, "Default FTE flex", cfg.fte_tolerance)
     r = kv(r, "Weekly full-time hours", cfg.weekly_full_time_hours)
     r = kv(r, "Generation method", result.method)
     r = kv(r, "Solver status", result.status)
-    r = kv(r, "Tolerance used", result.tolerance_used)
+    r = kv(r, "Extra flex applied", result.tolerance_used)
     r += 1
 
     c = ws.cell(r, 1, value="Operating shifts")
@@ -288,17 +289,31 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     c = ws.cell(r, 1, value="Roster")
     c.font = BOLD
     r += 1
-    hdr = ["Name", "Target FTE", "Fixed Sat off", "Seniority", "Unavailable dates"]
+    hdr = ["Name", "Target FTE", "FTE flex", "Fixed Sat off", "Seniority",
+           "Preferences", "Unavailable dates"]
     for j, h in enumerate(hdr, start=1):
         cc = ws.cell(r, j, value=h)
         _style_cell(cc, FILL_HEADER, WHITE_BOLD)
     r += 1
     for nurse in cfg.nurses:
+        prefs = []
+        if nurse.pref_nonconsec_sat:
+            prefs.append("non-consec Sat")
+        if nurse.pref_clustered:
+            prefs.append("cluster shifts")
+        if nurse.pref_off_mon:
+            prefs.append("off Mon")
+        if nurse.pref_off_wed:
+            prefs.append("off Wed")
+        if nurse.pref_off_fri:
+            prefs.append("off Fri")
         ws.cell(r, 1, value=nurse.name)
         ws.cell(r, 2, value=nurse.target_fte)
-        ws.cell(r, 3, value="yes" if nurse.fixed_saturdays_off else "no")
-        ws.cell(r, 4, value=nurse.seniority_rank)
-        ws.cell(r, 5, value=", ".join(nurse.unavailable_dates))
+        ws.cell(r, 3, value=nurse.tolerance(cfg.fte_tolerance))
+        ws.cell(r, 4, value="yes" if nurse.fixed_saturdays_off else "no")
+        ws.cell(r, 5, value=nurse.seniority_rank)
+        ws.cell(r, 6, value=", ".join(prefs) if prefs else "-")
+        ws.cell(r, 7, value=", ".join(nurse.unavailable_dates))
         r += 1
 
 

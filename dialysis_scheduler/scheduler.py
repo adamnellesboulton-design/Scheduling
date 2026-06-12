@@ -28,10 +28,12 @@ from .model import (
 
 # Soft-objective weights, descending priority.
 #
-# Tuned per the unit's directive to MAXIMIZE consistency (a stable, repeating
-# weekly line per nurse) and consecutive days off (cluster worked days so the
-# off-stretches are long and contiguous). Saturday equity remains a meaningful
-# but lower objective (still "fair and equitable", 25.06(E)).
+# Tuned to MAXIMIZE consistency (a stable, repeating weekly line per nurse) and
+# consecutive days off, while honouring per-line preferences (resolved by
+# seniority) and keeping low-FTE lines working regularly. Saturday equity stays
+# meaningful but lower ("fair and equitable", 25.06(E)).
+W_THREE_OF_FOUR = 2000  # low-FTE lines: strong push to work >=3 of every 4 weeks
+W_PREF = 450  # per honoured line-preference unit, scaled (0,1] by seniority
 W_OFF_CONSEC = 600  # reward each adjacent (off, off) calendar-day pair
 W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
 W_SAT_EQUITY = 120  # penalty per Saturday off the FTE-proportional fair share
@@ -39,7 +41,12 @@ W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
 W_FTE_DEV = 4  # penalty per half-hour of FTE deviation inside the band
 W_SENIORITY_TIE = 1  # tie-break: senior nurses get first pick of off-Saturdays
 
-RELAXED_TOLERANCE = 0.13
+# Lines below this FTE should work in >=3 of every rolling 4 weeks (soft).
+LOW_FTE_THRESHOLD = 0.30
+THREE_OF_FOUR_WINDOW = 4
+THREE_OF_FOUR_MIN_ACTIVE = 3
+
+RELAX_EXTRA = 0.05  # extra FTE flex added to every line if the base solve fails
 # The deterministic time limit governs the stopping point (reproducible). The
 # wall-clock cap is a pure safety valve set well above it so it never fires on
 # normal hardware and therefore never injects nondeterminism.
@@ -153,7 +160,7 @@ def _sat_cap_for_span(weeks: int, span_weeks: int) -> int:
 def _solve_cpsat(
     cfg: Config,
     operating: list[OperatingDate],
-    tolerance: float,
+    extra_tol: float,
     relaxed: bool,
 ) -> ScheduleResult:
     model = cp_model.CpModel()
@@ -204,12 +211,14 @@ def _solve_cpsat(
             if (ni, oi) in x
         )
         nurse_hours_expr[ni] = expr
-        target_hh = half_hours(nurse.target_fte * period_full)
+        # Per-line FTE flex (defaults to the config-wide tolerance), plus any
+        # extra relaxation applied this pass.
+        tol_n = nurse.tolerance(cfg.fte_tolerance) + extra_tol
         # Bound the band *strictly inside* the exact float tolerance band so the
         # float-precision validator can never flag a rounding-only violation:
         # lower bound rounds up, upper bound rounds down (in half-hour units).
-        lower_hh = math.ceil((nurse.target_fte - tolerance) * period_full * 2)
-        upper_hh = math.floor((nurse.target_fte + tolerance) * period_full * 2)
+        lower_hh = math.ceil((nurse.target_fte - tol_n) * period_full * 2)
+        upper_hh = math.floor((nurse.target_fte + tol_n) * period_full * 2)
         model.Add(expr >= max(0, lower_hh))
         model.Add(expr <= upper_hh)
 
@@ -344,6 +353,79 @@ def _solve_cpsat(
         model.Add(dev >= target_hh - nurse_hours_expr[ni])
         obj_terms.append(W_FTE_DEV * dev)
 
+    # 6. Line preferences (soft; conflicts resolved by seniority). Each honoured
+    #    preference is weighted W_PREF x a seniority factor in (0, 1] -- most
+    #    senior (rank 1) carries full weight, so when two lines' wishes clash the
+    #    senior nurse's preference prevails. Sits above equity but below the hard
+    #    rules and the low-FTE 3-of-4 push.
+    operating_weekdays = sorted({s.weekday for s in cfg.operating_shifts})
+    max_rank = max((nn.seniority_rank for nn in nurses), default=1)
+    for ni, nurse in enumerate(nurses):
+        senior_factor = (max_rank - nurse.seniority_rank + 1) / max_rank
+        pw = max(1, round(W_PREF * senior_factor))  # integer objective coeff
+
+        # a) Off-day preferences: penalize working that weekday.
+        for flag, wd in (
+            (nurse.pref_off_mon, 0),
+            (nurse.pref_off_wed, 2),
+            (nurse.pref_off_fri, 4),
+        ):
+            if not flag:
+                continue
+            for wk in range(weeks):
+                v = slot_var(ni, wk, wd)
+                if v is not None:
+                    obj_terms.append(pw * v)
+
+        # b) Non-consecutive Saturdays preferred: penalize back-to-back Sats.
+        if nurse.pref_nonconsec_sat:
+            for wk in range(weeks - 1):
+                a = slot_var(ni, wk, 5)
+                b = slot_var(ni, wk + 1, 5)
+                if a is None or b is None:
+                    continue
+                both = model.NewBoolVar(f"consecsat_{ni}_{wk}")
+                model.Add(both >= a + b - 1)
+                obj_terms.append(pw * both)
+
+        # c) Clustered shifts preferred: reward a Fri+Sat worked together (the
+        #    only calendar-adjacent pair on this unit).
+        if nurse.pref_clustered:
+            for wk in range(weeks):
+                fr = slot_var(ni, wk, 4)
+                sa = slot_var(ni, wk, 5)
+                if fr is None or sa is None:
+                    continue
+                both = model.NewBoolVar(f"cluster_{ni}_{wk}")
+                model.Add(both <= fr)
+                model.Add(both <= sa)
+                obj_terms.append(-pw * both)  # reward (minimization)
+
+    # 7. Low-FTE lines (< 0.30): strong push to work in >= 3 of every rolling
+    #    4-week window, so a small line stays regularly engaged instead of
+    #    bunching all its shifts together. Soft, so it never makes the schedule
+    #    infeasible -- an under-supplied line simply incurs the penalty.
+    for ni, nurse in enumerate(nurses):
+        if nurse.target_fte >= LOW_FTE_THRESHOLD:
+            continue
+        active = []
+        for wk in range(weeks):
+            wvars = [
+                v for wd in operating_weekdays
+                if (v := slot_var(ni, wk, wd)) is not None
+            ]
+            a = model.NewBoolVar(f"active_{ni}_{wk}")
+            if wvars:
+                model.Add(a <= sum(wvars))  # active only if >=1 shift that week
+            else:
+                model.Add(a == 0)
+            active.append(a)
+        for ws in range(0, weeks - THREE_OF_FOUR_WINDOW + 1):
+            window_active = sum(active[ws:ws + THREE_OF_FOUR_WINDOW])
+            short = model.NewIntVar(0, THREE_OF_FOUR_MIN_ACTIVE, f"tof_{ni}_{ws}")
+            model.Add(short >= THREE_OF_FOUR_MIN_ACTIVE - window_active)
+            obj_terms.append(W_THREE_OF_FOUR * short)
+
     model.Minimize(sum(obj_terms))
 
     solver = cp_model.CpSolver()
@@ -367,7 +449,7 @@ def _solve_cpsat(
             status=status_name,
             assignments=assignments,
             operating=operating,
-            tolerance_used=tolerance,
+            tolerance_used=extra_tol,
             drifted_nurses=drifted if relaxed else [],
         )
     return ScheduleResult(
@@ -375,7 +457,7 @@ def _solve_cpsat(
         method="cp-sat-relaxed" if relaxed else "cp-sat",
         status=status_name,
         operating=operating,
-        tolerance_used=tolerance,
+        tolerance_used=extra_tol,
     )
 
 
@@ -396,7 +478,7 @@ def _drifted_nurses(cfg, operating, assignments) -> list:
     for nurse in cfg.nurses:
         hrs = _nurse_total_hours(operating, assignments.get(nurse.name, {}))
         sf = scheduled_fte(hrs, cfg.weeks)
-        if abs(sf - nurse.target_fte) > cfg.fte_tolerance + 1e-9:
+        if abs(sf - nurse.target_fte) > nurse.tolerance(cfg.fte_tolerance) + 1e-9:
             drifted.append((nurse.name, round(sf, 3), round(sf - nurse.target_fte, 3)))
     return drifted
 
@@ -560,17 +642,17 @@ def generate_schedule(cfg: Config) -> ScheduleResult:
             binding_constraints=diag,
         )
 
-    # 1. CP-SAT at base tolerance.
-    res = _solve_cpsat(cfg, operating, cfg.fte_tolerance, relaxed=False)
+    # 1. CP-SAT at each line's base flex.
+    res = _solve_cpsat(cfg, operating, extra_tol=0.0, relaxed=False)
     if res.feasible:
         return res
 
-    # 2. Relax H5 to +/- 0.13.
-    res2 = _solve_cpsat(cfg, operating, RELAXED_TOLERANCE, relaxed=True)
+    # 2. Relax every line's flex by +0.05 to reach feasibility.
+    res2 = _solve_cpsat(cfg, operating, extra_tol=RELAX_EXTRA, relaxed=True)
     if res2.feasible:
         res2.messages.append(
-            f"FTE tolerance relaxed from +/-{cfg.fte_tolerance} to "
-            f"+/-{RELAXED_TOLERANCE} to reach feasibility (26.01 averaging)."
+            f"Each line's FTE flex was widened by +{RELAX_EXTRA} to reach "
+            "feasibility (26.01 averaging)."
         )
         if res2.drifted_nurses:
             res2.messages.append(

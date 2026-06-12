@@ -7,12 +7,14 @@ formatted Excel workbook.
 
 The unit runs a single day shift, four operating days a week:
 
-| Day | Shift | Hours | Paid (unpaid meal) | Paid (designated-available meal) |
-|-----|-------|-------|--------------------|----------------------------------|
-| Mon / Wed / Fri | **D10** 0730–1730 | 10.0 | 9.5 | 10.0 |
-| Sat | **D5** 0730–1230 | 5.0 | 5.0 | 5.0 |
+| Day | Shift | Elapsed | Paid hours |
+|-----|-------|---------|-----------|
+| Mon / Wed / Fri | **D10** 0730–1730 | 10.0 | 9.5 (30-min unpaid meal) |
+| Sat | **D5** 0730–1230 | 5.0 | 5.0 |
 
-Closed Sunday, Tuesday, Thursday. No evenings or nights.
+Closed Sunday, Tuesday, Thursday. No evenings or nights. Paid hours assume the
+30-min unpaid meal; a **missed meal is paid as overtime** (Art. 27, flagged not
+priced), so there is no meal-designation toggle.
 
 ---
 
@@ -45,12 +47,16 @@ Then in the browser:
 
 1. Set the **schedule period** (start date must be a Monday; rotation length is
    freely selectable, default 12 weeks, minimum 6), **daily demand** per
-   M/W/F/S, **meal designation**, and **FTE tolerance** in the sidebar.
-2. Edit the **roster** table. **Target FTE is entered freely** (each nurse's
-   contracted line) and the generator schedules within **±tolerance** (default
-   ±0.08) of it. An achievable-pattern menu is shown as a guide, and the app
-   warns if a target exceeds what unit hours can reach (max 0.89, or 0.93 with
-   a designated-available meal — full-time 1.0 is unreachable here).
+   M/W/F/S, and the **default FTE flex** in the sidebar.
+2. Edit the **roster** table:
+   - **Target FTE** is entered freely (each nurse's contracted line).
+   - **FTE flex ±** is per line, defaulting to the sidebar value (±0.08) but
+     adjustable for individual nurses.
+   - **Line preferences** (tick boxes): non-consecutive Saturdays, clustered
+     shifts, and off-day preferences for Monday / Wednesday / Friday. These are
+     soft and **conflicts are resolved by seniority** (rank 1 wins).
+   The app warns if a target exceeds what unit hours can reach (max 0.89 —
+   full-time 1.0 is unreachable here).
 3. Click **Generate schedule**. On success you get a styled grid preview,
    compliance badges, a per-nurse summary, and a **Download .xlsx** button. On
    infeasibility you get a red banner explaining which requirement binds.
@@ -83,9 +89,8 @@ python tests/test_smoke.py
 `weekly_full_time_hours = 37.5` (Art. 26.01).
 `scheduled_fte = total_paid_hours / (37.5 × weeks)`.
 The achievable menu enumerates every (weekday-shifts/2wk, Saturday-shifts/2wk)
-pair, computes the FTE, dedupes and sorts. The maximum achievable is **0.89**
-(unpaid meal) / **0.93** (designated-available meal); 1.0 cannot be reached on
-operating hours alone.
+pair, computes the FTE, dedupes and sorts. The maximum achievable is **0.89**;
+1.0 cannot be reached on operating hours alone.
 
 ### Hard constraints (always hold)
 
@@ -96,23 +101,31 @@ operating hours alone.
   `fixed_saturdays_off` nurses.
 - **H4** ≤ 6 consecutive calendar days (structurally bounded to 2 here;
   asserted anyway).
-- **H5** Scheduled FTE within ± tolerance of target, averaged over the period.
+- **H5** Scheduled FTE within each line's ± flex of target (per-line, default
+  ±0.08), averaged over the period.
 - **H6** One shift per nurse per day.
 
 ### Soft objectives (weighted, descending priority)
 
-The objective is tuned to **maximize consistency and consecutive days off**:
+The objective is tuned to **maximize consistency and consecutive days off**
+while honouring per-line preferences:
 
-1. **Consecutive days off** — reward every adjacent off/off calendar-day pair,
+1. **Low-FTE engagement** — lines below 0.30 FTE are strongly pushed to work in
+   ≥3 of every rolling 4 weeks (soft, so it never forces infeasibility).
+2. **Line preferences** — each ticked preference (non-consecutive Saturdays,
+   clustered shifts, off Mon/Wed/Fri) is rewarded, weighted by seniority so the
+   **senior nurse wins when two preferences conflict**. Sits above equity but
+   below the hard rules and low-FTE engagement.
+3. **Consecutive days off** — reward every adjacent off/off calendar-day pair,
    so worked days cluster and off-stretches stay long and contiguous.
-2. **Consistency** — penalize week-over-week changes in each nurse's weekday
+4. **Consistency** — penalize week-over-week changes in each nurse's weekday
    line, driving a stable repeating rotation (e.g. "always Mon/Wed/Fri").
    Saturdays are excluded because the 25.06(E) cap forbids a fixed weekly
    Saturday; their cadence is set by equity instead.
-3. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
+5. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
    equitable").
-4. **Weekday equity within an FTE class**.
-5. **FTE deviation** — minimized even inside the tolerance band.
+6. **Weekday equity within an FTE class**.
+7. **FTE deviation** — minimized even inside the flex band.
 
 Ties break by seniority (senior nurses get first pick of off-Saturdays).
 

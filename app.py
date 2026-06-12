@@ -17,11 +17,7 @@ from dialysis_scheduler.config import (
     DEFAULT_CONFIG_PATH,
     default_config,
 )
-from dialysis_scheduler.fte import (
-    achievable_fte_menu,
-    max_achievable_fte,
-    max_achievable_fte_paid,
-)
+from dialysis_scheduler.fte import achievable_fte_menu, max_achievable_fte
 from dialysis_scheduler.model import build_operating_dates
 from dialysis_scheduler.scheduler import generate_schedule
 from dialysis_scheduler.validator import validate
@@ -98,18 +94,16 @@ def sidebar():
                                  value=int(cfg.demand.get(day, 0)), step=1)
         )
 
-    # Meal designation flag.
-    st.sidebar.subheader("Meal designation")
-    cfg.meal_designated_available = st.sidebar.checkbox(
-        "Designated-available meal (D10 paid = 10.0h, 26.03(B)(1))",
-        value=cfg.meal_designated_available,
-    )
+    # Paid hours assume the 30-min unpaid meal (D10 = 9.5h); missed meals are
+    # paid as overtime by default, so there is no meal-designation toggle.
+    cfg.meal_designated_available = False
 
-    # FTE tolerance.
-    st.sidebar.subheader("FTE tolerance")
+    # Default FTE flex (per-line overrides live in the roster table).
+    st.sidebar.subheader("Default FTE flex")
     cfg.fte_tolerance = st.sidebar.slider(
-        "± tolerance (averaged over period, 26.01)",
+        "± default flex (averaged over period, 26.01)",
         min_value=0.02, max_value=0.20, value=float(cfg.fte_tolerance), step=0.01,
+        help="Applied to any line that doesn't set its own flex in the roster.",
     )
 
 
@@ -137,13 +131,26 @@ def roster_editor():
             hide_index=True, width="stretch",
         )
 
+    st.caption(
+        "Per-line **preferences** are soft and resolved by **seniority** when they "
+        "conflict (rank 1 wins). **FTE flex** defaults to the sidebar value but can "
+        "be overridden per line."
+    )
+
     rows = []
     for n in cfg.nurses:
         rows.append({
             "name": n.name,
             "target_fte": float(n.target_fte),
+            "fte_flex": float(n.fte_tolerance) if n.fte_tolerance is not None
+            else float(cfg.fte_tolerance),
             "fixed_saturdays_off": n.fixed_saturdays_off,
             "seniority_rank": n.seniority_rank,
+            "pref_nonconsec_sat": n.pref_nonconsec_sat,
+            "pref_clustered": n.pref_clustered,
+            "pref_off_mon": n.pref_off_mon,
+            "pref_off_wed": n.pref_off_wed,
+            "pref_off_fri": n.pref_off_fri,
             "unavailable_dates": ", ".join(n.unavailable_dates),
         })
     df = pd.DataFrame(rows)
@@ -157,14 +164,35 @@ def roster_editor():
             "target_fte": st.column_config.NumberColumn(
                 "Target FTE", min_value=0.0, max_value=1.0, step=0.01,
                 format="%.2f",
-                help="The nurse's contracted FTE; scheduled within ±tolerance.",
+                help="The nurse's contracted FTE; scheduled within its flex.",
+            ),
+            "fte_flex": st.column_config.NumberColumn(
+                "FTE flex ±", min_value=0.0, max_value=0.30, step=0.01,
+                format="%.2f",
+                help="Allowed deviation from target FTE for this line "
+                     "(defaults to the sidebar value).",
             ),
             "fixed_saturdays_off": st.column_config.CheckboxColumn(
                 "Fixed Sat off", help="25.06(B)/(E) waiver — never assigned Saturdays"
             ),
             "seniority_rank": st.column_config.NumberColumn(
                 "Seniority", min_value=1, step=1,
-                help="1 = most senior; tie-breaking only (25.03 ethos)",
+                help="1 = most senior; resolves preference conflicts (25.03 ethos)",
+            ),
+            "pref_nonconsec_sat": st.column_config.CheckboxColumn(
+                "Non-consec Sat", help="Prefer to avoid back-to-back Saturdays"
+            ),
+            "pref_clustered": st.column_config.CheckboxColumn(
+                "Cluster shifts", help="Prefer worked days grouped (e.g. Fri+Sat)"
+            ),
+            "pref_off_mon": st.column_config.CheckboxColumn(
+                "Off Mon", help="Prefer Mondays off"
+            ),
+            "pref_off_wed": st.column_config.CheckboxColumn(
+                "Off Wed", help="Prefer Wednesdays off"
+            ),
+            "pref_off_fri": st.column_config.CheckboxColumn(
+                "Off Fri", help="Prefer Fridays off"
             ),
             "unavailable_dates": st.column_config.TextColumn(
                 "Unavailable dates", help="comma-separated YYYY-MM-DD (approved leave)"
@@ -185,26 +213,36 @@ def roster_editor():
             tf = round(float(r["target_fte"]), 2)
         except (TypeError, ValueError):
             tf = 0.0
+        try:
+            flex = round(float(r["fte_flex"]), 2)
+        except (TypeError, ValueError):
+            flex = float(cfg.fte_tolerance)
         new_nurses.append(Nurse(
             name=name,
             target_fte=tf,
             fixed_saturdays_off=bool(r["fixed_saturdays_off"]),
             seniority_rank=int(r["seniority_rank"]) if pd.notna(r["seniority_rank"]) else 1,
             unavailable_dates=dates,
+            fte_tolerance=flex,
+            pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
+            pref_clustered=bool(r["pref_clustered"]),
+            pref_off_mon=bool(r["pref_off_mon"]),
+            pref_off_wed=bool(r["pref_off_wed"]),
+            pref_off_fri=bool(r["pref_off_fri"]),
         ))
     cfg.nurses = new_nurses
 
-    # Warn about targets that the unit's hours cannot reach within tolerance.
+    # Warn about targets the unit's hours cannot reach within the line's flex.
     unreachable = [
         n.name for n in cfg.nurses
-        if n.target_fte - cfg.fte_tolerance > max_ach + 1e-9
+        if n.target_fte - n.tolerance(cfg.fte_tolerance) > max_ach + 1e-9
     ]
     if unreachable:
         st.warning(
             f"⚠️ Target FTE unreachable on unit hours for: {', '.join(unreachable)}. "
-            f"The most a single line can reach is {max_ach:.2f} "
-            f"(or {max_achievable_fte_paid(cfg):.2f} with a designated-available "
-            "meal). These nurses will be scheduled as close as possible.",
+            f"The most a single line can reach is {max_ach:.2f} (full-time 1.0 is "
+            "not attainable on Mon/Wed/Fri/Sat hours). These nurses will be "
+            "scheduled as close as possible.",
         )
 
     # Show each nurse's nearest achievable pattern as a hint.
