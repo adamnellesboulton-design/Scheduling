@@ -1,0 +1,27 @@
+{
+  "name": "Pediatric Dialysis Unit Scheduler",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+
+  // Install dependencies once, when the Codespace is first created.
+  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt",
+
+  // Start the Streamlit app automatically every time you open the Codespace.
+  "postAttachCommand": {
+    "app": "streamlit run app.py --server.port 8501 --server.address 0.0.0.0 --server.headless true --browser.gatherUsageStats false"
+  },
+
+  // Expose the Streamlit port and pop the app open in a preview tab.
+  "forwardPorts": [8501],
+  "portsAttributes": {
+    "8501": {
+      "label": "Dialysis Scheduler (Streamlit)",
+      "onAutoForward": "openPreview"
+    }
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"]
+    }
+  }
+}

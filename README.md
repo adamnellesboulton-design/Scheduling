@@ -16,7 +16,25 @@ Closed Sunday, Tuesday, Thursday. No evenings or nights.
 
 ---
 
-## Quick start
+## Run it in the browser — no install (GitHub Codespaces)
+
+If you can't install software locally (e.g. a locked-down work computer), run
+the app entirely in your browser:
+
+1. On the GitHub repo page, click the green **Code** button → **Codespaces**
+   tab → **Create codespace** (on this branch).
+2. Wait ~1 minute while it installs dependencies — this is automatic
+   (`.devcontainer/devcontainer.json`).
+3. The app **starts itself** and opens in a preview tab. If it doesn't pop up,
+   open the **Ports** tab and click the globe icon next to port **8501**.
+
+The Codespace is private to your GitHub account (fine for real roster data) and
+the free tier covers ~60 hours/month. To restart the app manually in the
+Codespace terminal: `streamlit run app.py`.
+
+## Quick start (local install)
+
+Requires Python 3.11+.
 
 ```bash
 pip install -r requirements.txt
