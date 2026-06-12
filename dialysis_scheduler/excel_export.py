@@ -289,8 +289,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     c = ws.cell(r, 1, value="Roster")
     c.font = BOLD
     r += 1
-    hdr = ["Name", "Target FTE", "FTE flex", "Fixed Sat off", "Seniority",
-           "Preferences", "Unavailable dates"]
+    hdr = ["Name", "Target FTE", "FTE flex", "Job share", "Fixed Sat off",
+           "Seniority", "Preferences", "Unavailable dates"]
     for j, h in enumerate(hdr, start=1):
         cc = ws.cell(r, j, value=h)
         _style_cell(cc, FILL_HEADER, WHITE_BOLD)
@@ -310,10 +310,11 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
         ws.cell(r, 1, value=nurse.name)
         ws.cell(r, 2, value=nurse.target_fte)
         ws.cell(r, 3, value=nurse.tolerance(cfg.fte_tolerance))
-        ws.cell(r, 4, value="yes" if nurse.fixed_saturdays_off else "no")
-        ws.cell(r, 5, value=nurse.seniority_rank)
-        ws.cell(r, 6, value=", ".join(prefs) if prefs else "-")
-        ws.cell(r, 7, value=", ".join(nurse.unavailable_dates))
+        ws.cell(r, 4, value=nurse.job_share_group or "-")
+        ws.cell(r, 5, value="yes" if nurse.fixed_saturdays_off else "no")
+        ws.cell(r, 6, value=nurse.seniority_rank)
+        ws.cell(r, 7, value=", ".join(prefs) if prefs else "-")
+        ws.cell(r, 8, value=", ".join(nurse.unavailable_dates))
         r += 1
 
 

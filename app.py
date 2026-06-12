@@ -134,7 +134,8 @@ def roster_editor():
     st.caption(
         "Per-line **preferences** are soft and resolved by **seniority** when they "
         "conflict (rank 1 wins). **FTE flex** defaults to the sidebar value but can "
-        "be overridden per line."
+        "be overridden per line. Give two lines the same **Job share** label to "
+        "stop them ever working the same day. Saturdays are balanced by FTE first."
     )
 
     rows = []
@@ -144,6 +145,7 @@ def roster_editor():
             "target_fte": float(n.target_fte),
             "fte_flex": float(n.fte_tolerance) if n.fte_tolerance is not None
             else float(cfg.fte_tolerance),
+            "job_share": n.job_share_group,
             "fixed_saturdays_off": n.fixed_saturdays_off,
             "seniority_rank": n.seniority_rank,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
@@ -171,6 +173,11 @@ def roster_editor():
                 format="%.2f",
                 help="Allowed deviation from target FTE for this line "
                      "(defaults to the sidebar value).",
+            ),
+            "job_share": st.column_config.SelectboxColumn(
+                "Job share", options=["", "A", "B", "C", "D"],
+                help="Put the SAME label on two lines to job-share them — "
+                     "they will never be scheduled on the same day.",
             ),
             "fixed_saturdays_off": st.column_config.CheckboxColumn(
                 "Fixed Sat off", help="25.06(B)/(E) waiver — never assigned Saturdays"
@@ -225,6 +232,7 @@ def roster_editor():
             seniority_rank=int(r["seniority_rank"]) if pd.notna(r["seniority_rank"]) else 1,
             unavailable_dates=dates,
             fte_tolerance=flex,
+            job_share_group=str(r.get("job_share") or "").strip(),
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
             pref_clustered=bool(r["pref_clustered"]),
             pref_off_mon=bool(r["pref_off_mon"]),

@@ -52,6 +52,8 @@ Then in the browser:
    - **Target FTE** is entered freely (each nurse's contracted line).
    - **FTE flex ±** is per line, defaulting to the sidebar value (±0.08) but
      adjustable for individual nurses.
+   - **Job share**: give two lines the same label (A/B/…) and they will never
+     be scheduled on the same day (two people splitting one line).
    - **Line preferences** (tick boxes): non-consecutive Saturdays, clustered
      shifts, and off-day preferences for Monday / Wednesday / Friday. These are
      soft and **conflicts are resolved by seniority** (rank 1 wins).
@@ -104,25 +106,25 @@ pair, computes the FTE, dedupes and sorts. The maximum achievable is **0.89**;
 - **H5** Scheduled FTE within each line's ± flex of target (per-line, default
   ±0.08), averaged over the period.
 - **H6** One shift per nurse per day.
+- **H8** Job-share lines (same label) never work the same day.
 
 ### Soft objectives (weighted, descending priority)
 
-The objective is tuned for **consistency** and **per-line preferences**:
+In descending priority:
 
-1. **Low-FTE engagement** — lines below 0.30 FTE are strongly pushed to work in
+1. **Saturday equity (most important)** — distribute Saturdays in proportion to
+   FTE (25.06(E) "fair and equitable"). This dominates every other soft term.
+2. **Low-FTE engagement** — lines below 0.30 FTE are strongly pushed to work in
    ≥3 of every rolling 4 weeks (soft, so it never forces infeasibility).
-2. **Line preferences** — each ticked preference (non-consecutive Saturdays,
+3. **Line preferences** — each ticked preference (non-consecutive Saturdays,
    clustered shifts → longer consecutive days off, off Mon/Wed/Fri) is rewarded,
    weighted by seniority so the **senior nurse wins when two preferences
-   conflict**. Sits above equity but below the hard rules and low-FTE
-   engagement. Clustering / consecutive days off is opt-in per line, not a
+   conflict**. Clustering / consecutive days off is opt-in per line, not a
    global objective.
-3. **Consistency** — penalize week-over-week changes in each nurse's weekday
+4. **Consistency** — penalize week-over-week changes in each nurse's weekday
    line, driving a stable repeating rotation (e.g. "always Mon/Wed/Fri").
    Saturdays are excluded because the 25.06(E) cap forbids a fixed weekly
-   Saturday; their cadence is set by equity instead.
-4. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
-   equitable").
+   Saturday; their cadence is set by the equity term above.
 5. **Weekday equity within an FTE class**.
 6. **FTE deviation** — minimized even inside the flex band.
 

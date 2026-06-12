@@ -28,15 +28,15 @@ from .model import (
 
 # Soft-objective weights, descending priority.
 #
-# Tuned to MAXIMIZE consistency (a stable, repeating weekly line per nurse)
-# while honouring per-line preferences (resolved by seniority) and keeping
-# low-FTE lines working regularly. Clustering / consecutive days off is now an
-# opt-in line preference rather than a global objective. Saturday equity stays
-# meaningful but lower ("fair and equitable", 25.06(E)).
+# FTE-proportional Saturday balance is the MOST IMPORTANT objective and
+# dominates everything else. Below it: keep low-FTE lines working regularly,
+# honour per-line preferences (resolved by seniority), then consistency (a
+# stable repeating weekly line) and weekday equity. Clustering / consecutive
+# days off is an opt-in line preference, not a global objective.
+W_SAT_EQUITY = 8000  # penalty per Saturday off the FTE-proportional fair share
 W_THREE_OF_FOUR = 2000  # low-FTE lines: strong push to work >=3 of every 4 weeks
 W_PREF = 450  # per honoured line-preference unit, scaled (0,1] by seniority
 W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
-W_SAT_EQUITY = 120  # penalty per Saturday off the FTE-proportional fair share
 W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
 W_FTE_DEV = 4  # penalty per half-hour of FTE deviation inside the band
 W_SENIORITY_TIE = 1  # tie-break: senior nurses get first pick of off-Saturdays
@@ -121,17 +121,35 @@ def saturday_feasibility_check(
 def coverage_feasibility_check(
     cfg: Config, operating: list[OperatingDate]
 ) -> PreCheck:
-    """Per-day: enough eligible nurses to meet demand (H1)."""
+    """Per-day: enough simultaneously-available nurses to meet demand (H1, H8).
+
+    A job-share group can supply at most one person on any given day, so its
+    members count once toward a day's effective capacity.
+    """
     msgs = []
     ok = True
     for od in operating:
-        elig = sum(1 for n in cfg.nurses if nurse_eligible_for(n, od))
-        if od.demand > elig:
+        solo = 0
+        group_has_elig: dict[str, bool] = {}
+        for n in cfg.nurses:
+            if not nurse_eligible_for(n, od):
+                continue
+            label = (n.job_share_group or "").strip()
+            if label:
+                group_has_elig[label] = True
+            else:
+                solo += 1
+        effective = solo + sum(1 for v in group_has_elig.values() if v)
+        if od.demand > effective:
             ok = False
+            note = (
+                " (job-share lines count once per day, reducing same-day capacity)"
+                if group_has_elig else ""
+            )
             msgs.append(
                 f"{od.iso} ({od.weekday_name}) demands {od.demand} RNs but only "
-                f"{elig} eligible nurses exist (unavailability / waivers reduce the "
-                "pool). Lower demand for this day or widen availability."
+                f"{effective} can work that day{note}. Lower demand for this day, "
+                "widen availability, or remove a job share."
             )
     return PreCheck(ok, msgs)
 
@@ -200,6 +218,22 @@ def _solve_cpsat(
             ]
             if window_vars:
                 model.Add(sum(window_vars) <= cap)
+
+    # H8: job share -- lines sharing a non-empty label never work the same day
+    # (two people splitting one line). At most one member of the group may be
+    # assigned on any operating day.
+    js_groups: dict[str, list[int]] = {}
+    for ni, nurse in enumerate(nurses):
+        label = (nurse.job_share_group or "").strip()
+        if label:
+            js_groups.setdefault(label, []).append(ni)
+    for label, members in js_groups.items():
+        if len(members) < 2:
+            continue
+        for oi in range(len(operating)):
+            day_vars = [x[(ni, oi)] for ni in members if (ni, oi) in x]
+            if len(day_vars) > 1:
+                model.Add(sum(day_vars) <= 1)
 
     # H5: scheduled FTE within +/- tolerance, in half-hour units.
     period_full = WEEKLY_FULL_TIME_HOURS * weeks
@@ -516,11 +550,32 @@ def _diagnose(cfg: Config, operating: list[OperatingDate]) -> list[str]:
             "FTE tolerances. Raise target FTEs or add staff."
         )
 
+    # Job-share tension: each shared day forces the non-shared lines to cover,
+    # which can push their hours past their FTE flex even when per-day capacity
+    # looks fine.
+    js_labels = {
+        (n.job_share_group or "").strip()
+        for n in cfg.nurses
+        if (n.job_share_group or "").strip()
+    }
+    if js_labels:
+        max_weekday_demand = max(
+            (od.demand for od in operating if not od.is_saturday), default=0
+        )
+        n_solo = sum(1 for n in cfg.nurses if not (n.job_share_group or "").strip())
+        if max_weekday_demand >= n_solo + len(js_labels):
+            findings.append(
+                "H8 (job share) is likely binding: with job-share lines counting "
+                "once per day, meeting weekday demand forces every non-shared line "
+                "to work most days, which can exceed their FTE flex. Lower weekday "
+                "demand, add a line, or reduce/remove a job share."
+            )
+
     if not findings:
         findings.append(
             "No single hard-constraint family is individually infeasible; the "
-            "combination is over-constrained. Try relaxing FTE tolerance, demand, "
-            "or Saturday waivers."
+            "combination is over-constrained. Try relaxing FTE flex, demand, "
+            "Saturday waivers, or a job share."
         )
     return findings
 
@@ -575,7 +630,18 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
                 n.seniority_rank,
             )
         )
-        chosen = candidates[: od.demand]
+        # Pick up to demand, never putting two job-share partners on one day (H8).
+        chosen = []
+        used_groups = set()
+        for n in candidates:
+            if len(chosen) >= od.demand:
+                break
+            label = (n.job_share_group or "").strip()
+            if label and label in used_groups:
+                continue
+            chosen.append(n)
+            if label:
+                used_groups.add(label)
         if len(chosen) < od.demand:
             binding.append(
                 f"{od.iso} ({od.weekday_name}): only {len(chosen)} of {od.demand} "

@@ -127,6 +127,35 @@ def validate(cfg: Config, result) -> ValidationReport:
         )
     )
 
+    # --- Job share: partners never work the same day (H8) -----------------
+    js_groups: dict[str, list] = {}
+    for nurse in cfg.nurses:
+        label = (nurse.job_share_group or "").strip()
+        if label:
+            js_groups.setdefault(label, []).append(nurse)
+    js_pairs = {g: m for g, m in js_groups.items() if len(m) >= 2}
+    if js_pairs:
+        js_ok = True
+        clashes = []
+        for label, members in js_pairs.items():
+            for od in operating:
+                both = [n.name for n in members if od.iso in assignments.get(n.name, {})]
+                if len(both) > 1:
+                    js_ok = False
+                    clashes.append(f"{label} on {od.iso}: {', '.join(both)}")
+        names = "; ".join(
+            f"{g} = {' + '.join(n.name for n in m)}" for g, m in js_pairs.items()
+        )
+        report.rules.append(
+            RuleResult(
+                "Job-share partners never share a day",
+                "Unit policy (H8)",
+                "PASS" if js_ok else "FAIL",
+                f"Job shares: {names}. "
+                + ("No overlaps." if js_ok else "Overlaps -> " + "; ".join(clashes)),
+            )
+        )
+
     # --- Max consecutive days (H4) ----------------------------------------
     overall_max = 0
     for nurse in cfg.nurses:

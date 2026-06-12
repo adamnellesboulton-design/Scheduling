@@ -67,6 +67,9 @@ class Nurse:
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
     # Per-line FTE flex (± tolerance). None -> use the config-wide default.
     fte_tolerance: Optional[float] = None
+    # Job-share label: lines sharing the same non-empty label never work the
+    # same day (two people splitting one line). Empty = no job share.
+    job_share_group: str = ""
     # Line preferences (soft, resolved by seniority).
     pref_nonconsec_sat: bool = False  # avoid back-to-back Saturdays
     pref_clustered: bool = False  # prefer worked days grouped (e.g. Fri+Sat)
@@ -183,20 +186,18 @@ def default_operating_shifts() -> list[ShiftDef]:
 
 
 def default_nurses() -> list[Nurse]:
-    """A sample roster so the app is usable out of the box.
+    """The unit roster, in seniority order, pre-populated for the app.
 
-    Targets are chosen to be exactly satisfiable against the default demand
-    (Mon/Wed/Fri = 4, Sat = 2): over a 12-week period the unit needs 144
-    weekday-shifts and 24 Saturday-shifts; these six nurses' patterns sum to
-    exactly that, with no nurse exceeding the 25.06(E) Saturday cap.
+    Targets are sized to be satisfiable against the default demand
+    (Mon/Wed/Fri = 4, Sat = 2) -- over 12 weeks the unit needs 144 weekday and
+    24 Saturday shifts, and these five lines sum to roughly that within flex.
     """
     return [
-        Nurse("Avery", 0.83, seniority_rank=1),  # 3 wd/wk + ~alt Sat
-        Nurse("Blake", 0.76, seniority_rank=2),  # 3 wd/wk, no Sat
-        Nurse("Casey", 0.57, seniority_rank=3),  # 2 wd/wk + ~alt Sat
-        Nurse("Dana", 0.57, seniority_rank=4),  # 2 wd/wk + ~alt Sat
-        Nurse("Eden", 0.32, seniority_rank=5),  # 1 wd/wk + ~alt Sat
-        Nurse("Finley", 0.25, seniority_rank=6, fixed_saturdays_off=True),
+        Nurse("Kathleen", 0.83, seniority_rank=1),
+        Nurse("Adam", 0.76, seniority_rank=2),
+        Nurse("Joane", 0.63, seniority_rank=3),
+        Nurse("Leslie", 0.57, seniority_rank=4),
+        Nurse("Kaitlyn", 0.51, seniority_rank=5),
     ]
 
 
