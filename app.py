@@ -183,7 +183,8 @@ def roster_editor():
                 "Non-consec Sat", help="Prefer to avoid back-to-back Saturdays"
             ),
             "pref_clustered": st.column_config.CheckboxColumn(
-                "Cluster shifts", help="Prefer worked days grouped (e.g. Fri+Sat)"
+                "Cluster shifts",
+                help="Group worked days (e.g. Fri+Sat) for longer consecutive days off"
             ),
             "pref_off_mon": st.column_config.CheckboxColumn(
                 "Off Mon", help="Prefer Mondays off"

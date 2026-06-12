@@ -28,13 +28,13 @@ from .model import (
 
 # Soft-objective weights, descending priority.
 #
-# Tuned to MAXIMIZE consistency (a stable, repeating weekly line per nurse) and
-# consecutive days off, while honouring per-line preferences (resolved by
-# seniority) and keeping low-FTE lines working regularly. Saturday equity stays
+# Tuned to MAXIMIZE consistency (a stable, repeating weekly line per nurse)
+# while honouring per-line preferences (resolved by seniority) and keeping
+# low-FTE lines working regularly. Clustering / consecutive days off is now an
+# opt-in line preference rather than a global objective. Saturday equity stays
 # meaningful but lower ("fair and equitable", 25.06(E)).
 W_THREE_OF_FOUR = 2000  # low-FTE lines: strong push to work >=3 of every 4 weeks
 W_PREF = 450  # per honoured line-preference unit, scaled (0,1] by seniority
-W_OFF_CONSEC = 600  # reward each adjacent (off, off) calendar-day pair
 W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
 W_SAT_EQUITY = 120  # penalty per Saturday off the FTE-proportional fair share
 W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
@@ -317,34 +317,7 @@ def _solve_cpsat(
                 model.Add(diff >= b_expr - a_expr)
                 obj_terms.append(W_PATTERN * diff)
 
-    # 4. Consecutive days off: reward every adjacent pair of calendar days on
-    #    which a nurse is off. Because total off-days are pinned by the FTE
-    #    band, maximizing adjacent off/off pairs is equivalent to minimizing the
-    #    number of separate off-blocks -> longer contiguous stretches off. Work
-    #    is thus clustered (e.g. Fri+Sat together) rather than scattered across
-    #    the week. Closure days (Tue/Thu/Sun) are always-off constants.
-    start = cfg.start
-    n_days = 7 * weeks
-    iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
-    for ni in range(len(nurses)):
-        on_expr = []  # one entry per calendar day in the period
-        for day_idx in range(n_days):
-            d = start + timedelta(days=day_idx)
-            oi = iso_to_oi.get(d.isoformat())
-            if oi is not None and (ni, oi) in x:
-                on_expr.append(x[(ni, oi)])
-            else:
-                on_expr.append(0)  # closure day or fixed-off operating day
-        for k in range(n_days - 1):
-            a, b = on_expr[k], on_expr[k + 1]
-            if isinstance(a, int) and isinstance(b, int):
-                continue  # constant off/off pair -> no decision to make
-            off_pair = model.NewBoolVar(f"offpair_{ni}_{k}")
-            model.Add(off_pair <= 1 - a)
-            model.Add(off_pair <= 1 - b)
-            obj_terms.append(-W_OFF_CONSEC * off_pair)  # reward (minimization)
-
-    # 5. FTE deviation (L1 in half-hours, even within tolerance band).
+    # 4. FTE deviation (L1 in half-hours, even within tolerance band).
     for ni, nurse in enumerate(nurses):
         target_hh = half_hours(nurse.target_fte * period_full)
         max_hh = half_hours(period_full)
@@ -353,13 +326,16 @@ def _solve_cpsat(
         model.Add(dev >= target_hh - nurse_hours_expr[ni])
         obj_terms.append(W_FTE_DEV * dev)
 
-    # 6. Line preferences (soft; conflicts resolved by seniority). Each honoured
+    # 5. Line preferences (soft; conflicts resolved by seniority). Each honoured
     #    preference is weighted W_PREF x a seniority factor in (0, 1] -- most
     #    senior (rank 1) carries full weight, so when two lines' wishes clash the
     #    senior nurse's preference prevails. Sits above equity but below the hard
     #    rules and the low-FTE 3-of-4 push.
     operating_weekdays = sorted({s.weekday for s in cfg.operating_shifts})
     max_rank = max((nn.seniority_rank for nn in nurses), default=1)
+    start = cfg.start
+    n_days = 7 * weeks
+    iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
     for ni, nurse in enumerate(nurses):
         senior_factor = (max_rank - nurse.seniority_rank + 1) / max_rank
         pw = max(1, round(W_PREF * senior_factor))  # integer objective coeff
@@ -388,20 +364,30 @@ def _solve_cpsat(
                 model.Add(both >= a + b - 1)
                 obj_terms.append(pw * both)
 
-        # c) Clustered shifts preferred: reward a Fri+Sat worked together (the
-        #    only calendar-adjacent pair on this unit).
+        # c) Clustered shifts preferred: reward every adjacent pair of calendar
+        #    days on which this nurse is off. With total off-days pinned by the
+        #    FTE band, maximizing off/off adjacencies clusters the worked days
+        #    (e.g. Fri+Sat together) and lengthens contiguous days off. Closure
+        #    days (Tue/Thu/Sun) are always-off constants.
         if nurse.pref_clustered:
-            for wk in range(weeks):
-                fr = slot_var(ni, wk, 4)
-                sa = slot_var(ni, wk, 5)
-                if fr is None or sa is None:
-                    continue
-                both = model.NewBoolVar(f"cluster_{ni}_{wk}")
-                model.Add(both <= fr)
-                model.Add(both <= sa)
-                obj_terms.append(-pw * both)  # reward (minimization)
+            on_expr = []
+            for day_idx in range(n_days):
+                d = start + timedelta(days=day_idx)
+                oi = iso_to_oi.get(d.isoformat())
+                if oi is not None and (ni, oi) in x:
+                    on_expr.append(x[(ni, oi)])
+                else:
+                    on_expr.append(0)
+            for k in range(n_days - 1):
+                a, b = on_expr[k], on_expr[k + 1]
+                if isinstance(a, int) and isinstance(b, int):
+                    continue  # constant off/off pair -> no decision to make
+                off_pair = model.NewBoolVar(f"clusteroff_{ni}_{k}")
+                model.Add(off_pair <= 1 - a)
+                model.Add(off_pair <= 1 - b)
+                obj_terms.append(-pw * off_pair)  # reward (minimization)
 
-    # 7. Low-FTE lines (< 0.30): strong push to work in >= 3 of every rolling
+    # 6. Low-FTE lines (< 0.30): strong push to work in >= 3 of every rolling
     #    4-week window, so a small line stays regularly engaged instead of
     #    bunching all its shifts together. Soft, so it never makes the schedule
     #    infeasible -- an under-supplied line simply incurs the penalty.

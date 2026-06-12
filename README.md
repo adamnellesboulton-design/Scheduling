@@ -107,25 +107,24 @@ pair, computes the FTE, dedupes and sorts. The maximum achievable is **0.89**;
 
 ### Soft objectives (weighted, descending priority)
 
-The objective is tuned to **maximize consistency and consecutive days off**
-while honouring per-line preferences:
+The objective is tuned for **consistency** and **per-line preferences**:
 
 1. **Low-FTE engagement** — lines below 0.30 FTE are strongly pushed to work in
    ≥3 of every rolling 4 weeks (soft, so it never forces infeasibility).
 2. **Line preferences** — each ticked preference (non-consecutive Saturdays,
-   clustered shifts, off Mon/Wed/Fri) is rewarded, weighted by seniority so the
-   **senior nurse wins when two preferences conflict**. Sits above equity but
-   below the hard rules and low-FTE engagement.
-3. **Consecutive days off** — reward every adjacent off/off calendar-day pair,
-   so worked days cluster and off-stretches stay long and contiguous.
-4. **Consistency** — penalize week-over-week changes in each nurse's weekday
+   clustered shifts → longer consecutive days off, off Mon/Wed/Fri) is rewarded,
+   weighted by seniority so the **senior nurse wins when two preferences
+   conflict**. Sits above equity but below the hard rules and low-FTE
+   engagement. Clustering / consecutive days off is opt-in per line, not a
+   global objective.
+3. **Consistency** — penalize week-over-week changes in each nurse's weekday
    line, driving a stable repeating rotation (e.g. "always Mon/Wed/Fri").
    Saturdays are excluded because the 25.06(E) cap forbids a fixed weekly
    Saturday; their cadence is set by equity instead.
-5. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
+4. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
    equitable").
-6. **Weekday equity within an FTE class**.
-7. **FTE deviation** — minimized even inside the flex band.
+5. **Weekday equity within an FTE class**.
+6. **FTE deviation** — minimized even inside the flex band.
 
 Ties break by seniority (senior nurses get first pick of off-Saturdays).
 
