@@ -25,11 +25,14 @@ streamlit run app.py
 
 Then in the browser:
 
-1. Set the **schedule period** (start date must be a Monday; 6/9/12/18 weeks),
-   **daily demand**, **meal designation**, and **FTE tolerance** in the sidebar.
-2. Edit the **roster** table. Target FTE is chosen from a *computed dropdown of
-   achievable FTEs* (whole shifts only — full-time 1.0 is unreachable on unit
-   hours).
+1. Set the **schedule period** (start date must be a Monday; rotation length is
+   freely selectable, default 12 weeks, minimum 6), **daily demand** per
+   M/W/F/S, **meal designation**, and **FTE tolerance** in the sidebar.
+2. Edit the **roster** table. **Target FTE is entered freely** (each nurse's
+   contracted line) and the generator schedules within **±tolerance** (default
+   ±0.08) of it. An achievable-pattern menu is shown as a guide, and the app
+   warns if a target exceeds what unit hours can reach (max 0.89, or 0.93 with
+   a designated-available meal — full-time 1.0 is unreachable here).
 3. Click **Generate schedule**. On success you get a styled grid preview,
    compliance badges, a per-nurse summary, and a **Download .xlsx** button. On
    infeasibility you get a red banner explaining which requirement binds.
@@ -80,11 +83,18 @@ operating hours alone.
 
 ### Soft objectives (weighted, descending priority)
 
-1. Saturday equity (FTE-proportional fair share).
-2. Weekday equity within an FTE class.
-3. Pattern stability (penalize week-over-week changes).
-4. FTE deviation (even inside the tolerance band).
-5. Avoid fatiguing Fri+Sat doubles.
+The objective is tuned to **maximize consistency and consecutive days off**:
+
+1. **Consecutive days off** — reward every adjacent off/off calendar-day pair,
+   so worked days cluster and off-stretches stay long and contiguous.
+2. **Consistency** — penalize week-over-week changes in each nurse's weekday
+   line, driving a stable repeating rotation (e.g. "always Mon/Wed/Fri").
+   Saturdays are excluded because the 25.06(E) cap forbids a fixed weekly
+   Saturday; their cadence is set by equity instead.
+3. **Saturday equity** — FTE-proportional fair share (25.06(E) "fair and
+   equitable").
+4. **Weekday equity within an FTE class**.
+5. **FTE deviation** — minimized even inside the tolerance band.
 
 Ties break by seniority (senior nurses get first pick of off-Saturdays).
 

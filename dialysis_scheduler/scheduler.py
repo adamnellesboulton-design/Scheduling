@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Optional
 
 from ortools.sat.python import cp_model
@@ -25,13 +26,18 @@ from .model import (
     nurse_eligible_for,
 )
 
-# Soft-objective weights, descending priority (Section 6).
-W_SAT_EQUITY = 10000
-W_WEEKDAY_EQUITY = 1000
-W_PATTERN = 100
-W_FTE_DEV = 10  # per half-hour
-W_FRI_SAT = 30
-W_SENIORITY_TIE = 1
+# Soft-objective weights, descending priority.
+#
+# Tuned per the unit's directive to MAXIMIZE consistency (a stable, repeating
+# weekly line per nurse) and consecutive days off (cluster worked days so the
+# off-stretches are long and contiguous). Saturday equity remains a meaningful
+# but lower objective (still "fair and equitable", 25.06(E)).
+W_OFF_CONSEC = 600  # reward each adjacent (off, off) calendar-day pair
+W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
+W_SAT_EQUITY = 120  # penalty per Saturday off the FTE-proportional fair share
+W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
+W_FTE_DEV = 4  # penalty per half-hour of FTE deviation inside the band
+W_SENIORITY_TIE = 1  # tie-break: senior nurses get first pick of off-Saturdays
 
 RELAXED_TOLERANCE = 0.13
 # The deterministic time limit governs the stopping point (reproducible). The
@@ -207,7 +213,7 @@ def _solve_cpsat(
         model.Add(expr >= max(0, lower_hh))
         model.Add(expr <= upper_hh)
 
-    # --- Soft objective terms (Section 6) ---------------------------------
+    # --- Soft objective terms ---------------------------------------------
     obj_terms = []
 
     sats = saturday_dates(operating)
@@ -272,8 +278,11 @@ def _solve_cpsat(
             model.Add(spread == gmax - gmin)
             obj_terms.append(W_WEEKDAY_EQUITY * spread)
 
-    # 3. Pattern stability: penalize week-over-week changes per weekday slot.
-    # Index operating dates by (week, weekday) for quick lookup.
+    # 3. Consistency: penalize week-over-week changes in the WEEKDAY line, so
+    #    each nurse tends to work the same weekdays every week (a stable,
+    #    predictable rotation). Saturdays are excluded -- the 25.06(E) cap makes
+    #    a fixed weekly Saturday impossible, so Saturday cadence is governed by
+    #    the equity term instead.
     by_week_wd: dict[tuple[int, int], int] = {}
     for oi, od in enumerate(operating):
         by_week_wd[(od.week_index, od.weekday)] = oi
@@ -284,21 +293,49 @@ def _solve_cpsat(
             return None
         return x.get((ni, oi))  # may be None if ineligible (treated as 0)
 
+    weekday_only = [s.weekday for s in cfg.operating_shifts if s.weekday != 5]
     for ni in range(len(nurses)):
-        for wd in [s.weekday for s in cfg.operating_shifts]:
+        for wd in weekday_only:
             for wk in range(weeks - 1):
                 a = slot_var(ni, wk, wd)
                 b = slot_var(ni, wk + 1, wd)
-                a_expr = a if a is not None else 0
-                b_expr = b if b is not None else 0
                 if a is None and b is None:
                     continue
+                a_expr = a if a is not None else 0
+                b_expr = b if b is not None else 0
                 diff = model.NewBoolVar(f"pat_{ni}_{wd}_{wk}")
                 model.Add(diff >= a_expr - b_expr)
                 model.Add(diff >= b_expr - a_expr)
                 obj_terms.append(W_PATTERN * diff)
 
-    # 4. FTE deviation (L1 in half-hours, even within tolerance band).
+    # 4. Consecutive days off: reward every adjacent pair of calendar days on
+    #    which a nurse is off. Because total off-days are pinned by the FTE
+    #    band, maximizing adjacent off/off pairs is equivalent to minimizing the
+    #    number of separate off-blocks -> longer contiguous stretches off. Work
+    #    is thus clustered (e.g. Fri+Sat together) rather than scattered across
+    #    the week. Closure days (Tue/Thu/Sun) are always-off constants.
+    start = cfg.start
+    n_days = 7 * weeks
+    iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
+    for ni in range(len(nurses)):
+        on_expr = []  # one entry per calendar day in the period
+        for day_idx in range(n_days):
+            d = start + timedelta(days=day_idx)
+            oi = iso_to_oi.get(d.isoformat())
+            if oi is not None and (ni, oi) in x:
+                on_expr.append(x[(ni, oi)])
+            else:
+                on_expr.append(0)  # closure day or fixed-off operating day
+        for k in range(n_days - 1):
+            a, b = on_expr[k], on_expr[k + 1]
+            if isinstance(a, int) and isinstance(b, int):
+                continue  # constant off/off pair -> no decision to make
+            off_pair = model.NewBoolVar(f"offpair_{ni}_{k}")
+            model.Add(off_pair <= 1 - a)
+            model.Add(off_pair <= 1 - b)
+            obj_terms.append(-W_OFF_CONSEC * off_pair)  # reward (minimization)
+
+    # 5. FTE deviation (L1 in half-hours, even within tolerance band).
     for ni, nurse in enumerate(nurses):
         target_hh = half_hours(nurse.target_fte * period_full)
         max_hh = half_hours(period_full)
@@ -306,18 +343,6 @@ def _solve_cpsat(
         model.Add(dev >= nurse_hours_expr[ni] - target_hh)
         model.Add(dev >= target_hh - nurse_hours_expr[ni])
         obj_terms.append(W_FTE_DEV * dev)
-
-    # 5. Avoid Fri+Sat doubles within a week.
-    fri_wd, sat_wd = 4, 5
-    for ni in range(len(nurses)):
-        for wk in range(weeks):
-            fa = slot_var(ni, wk, fri_wd)
-            sa = slot_var(ni, wk, sat_wd)
-            if fa is None or sa is None:
-                continue
-            both = model.NewBoolVar(f"frisat_{ni}_{wk}")
-            model.Add(both >= fa + sa - 1)
-            obj_terms.append(W_FRI_SAT * both)
 
     model.Minimize(sum(obj_terms))
 

@@ -14,12 +14,14 @@ import streamlit as st
 from dialysis_scheduler.config import (
     Config,
     Nurse,
-    ALLOWED_WEEKS,
     DEFAULT_CONFIG_PATH,
     default_config,
-    default_operating_shifts,
 )
-from dialysis_scheduler.fte import achievable_fte_menu, max_achievable_fte
+from dialysis_scheduler.fte import (
+    achievable_fte_menu,
+    max_achievable_fte,
+    max_achievable_fte_paid,
+)
 from dialysis_scheduler.model import build_operating_dates
 from dialysis_scheduler.scheduler import generate_schedule
 from dialysis_scheduler.validator import validate
@@ -78,9 +80,11 @@ def sidebar():
     start = st.sidebar.date_input("Start date (must be a Monday)", value=cfg.start)
     if start.weekday() != 0:
         st.sidebar.error("Start date must be a Monday (Section 3.1).")
-    weeks = st.sidebar.selectbox(
-        "Length (weeks)", ALLOWED_WEEKS, index=ALLOWED_WEEKS.index(cfg.weeks)
-        if cfg.weeks in ALLOWED_WEEKS else 2,
+    weeks = st.sidebar.number_input(
+        "Rotation length (weeks)", min_value=6, max_value=52,
+        value=int(cfg.weeks), step=1,
+        help="The rotation repeats over this many weeks (default 12). "
+             "Minimum 6 (25.05 posting). Common choices: 6, 9, 12, 18.",
     )
     cfg.start_date = start.isoformat()
     cfg.weeks = int(weeks)
@@ -117,14 +121,15 @@ def roster_editor():
     st.subheader("Nurse roster")
 
     menu = achievable_fte_menu(cfg)
-    fte_values = [o.fte for o in menu]
-    fte_labels = {o.fte: o.label for o in menu}
+    max_ach = max_achievable_fte(cfg)
     st.caption(
-        "Target FTE is chosen from the **achievable** menu below (whole shifts "
-        f"only). Max achievable = {max_achievable_fte(cfg):.2f} on unit operating "
-        "hours — full-time (1.0) is unreachable here."
+        "Enter each nurse's **target FTE** (their contracted line). The "
+        f"generator schedules each nurse within **±{cfg.fte_tolerance:.2f}** of it, "
+        "averaged over the rotation. The achievable-pattern menu below is a guide "
+        f"— the most a single line can reach on unit operating hours is "
+        f"**{max_ach:.2f}** (full-time 1.0 is unreachable here)."
     )
-    with st.expander("Achievable FTE menu (for reference)"):
+    with st.expander("Achievable FTE patterns (for reference)"):
         st.dataframe(
             pd.DataFrame(
                 [{"FTE": o.fte, "Pattern": o.label.split(" - ", 1)[1]} for o in menu]
@@ -136,8 +141,7 @@ def roster_editor():
     for n in cfg.nurses:
         rows.append({
             "name": n.name,
-            "target_fte": n.target_fte if n.target_fte in fte_values
-            else min(fte_values, key=lambda v: abs(v - n.target_fte)),
+            "target_fte": float(n.target_fte),
             "fixed_saturdays_off": n.fixed_saturdays_off,
             "seniority_rank": n.seniority_rank,
             "unavailable_dates": ", ".join(n.unavailable_dates),
@@ -150,9 +154,10 @@ def roster_editor():
         width="stretch",
         column_config={
             "name": st.column_config.TextColumn("Name", required=True),
-            "target_fte": st.column_config.SelectboxColumn(
-                "Target FTE", options=fte_values,
-                help="Achievable FTE (see menu above)",
+            "target_fte": st.column_config.NumberColumn(
+                "Target FTE", min_value=0.0, max_value=1.0, step=0.01,
+                format="%.2f",
+                help="The nurse's contracted FTE; scheduled within ±tolerance.",
             ),
             "fixed_saturdays_off": st.column_config.CheckboxColumn(
                 "Fixed Sat off", help="25.06(B)/(E) waiver — never assigned Saturdays"
@@ -177,9 +182,9 @@ def roster_editor():
         dates_raw = str(r.get("unavailable_dates") or "").strip()
         dates = _parse_dates(dates_raw)
         try:
-            tf = float(r["target_fte"])
+            tf = round(float(r["target_fte"]), 2)
         except (TypeError, ValueError):
-            tf = fte_values[0]
+            tf = 0.0
         new_nurses.append(Nurse(
             name=name,
             target_fte=tf,
@@ -189,10 +194,26 @@ def roster_editor():
         ))
     cfg.nurses = new_nurses
 
-    # Show legend in fte_labels for the chosen FTEs.
-    if cfg.nurses:
+    # Warn about targets that the unit's hours cannot reach within tolerance.
+    unreachable = [
+        n.name for n in cfg.nurses
+        if n.target_fte - cfg.fte_tolerance > max_ach + 1e-9
+    ]
+    if unreachable:
+        st.warning(
+            f"⚠️ Target FTE unreachable on unit hours for: {', '.join(unreachable)}. "
+            f"The most a single line can reach is {max_ach:.2f} "
+            f"(or {max_achievable_fte_paid(cfg):.2f} with a designated-available "
+            "meal). These nurses will be scheduled as close as possible.",
+        )
+
+    # Show each nurse's nearest achievable pattern as a hint.
+    if cfg.nurses and menu:
+        def nearest(fte):
+            o = min(menu, key=lambda o: abs(o.fte - fte))
+            return o.label.split(" - ", 1)[1]
         chips = " · ".join(
-            f"**{n.name}**: {fte_labels.get(n.target_fte, f'{n.target_fte:.2f}')}"
+            f"**{n.name}** {n.target_fte:.2f} (~{nearest(n.target_fte)})"
             for n in cfg.nurses
         )
         st.caption(chips)

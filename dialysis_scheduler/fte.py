@@ -77,6 +77,20 @@ def max_achievable_fte(cfg: Config) -> float:
     return max(o.fte for o in menu) if menu else 0.0
 
 
+def max_achievable_fte_paid(cfg: Config) -> float:
+    """Max achievable FTE if the designated-available meal were elected.
+
+    Independent of the current meal flag, so the UI can show the higher cap as
+    an option (e.g. 0.93 vs 0.89).
+    """
+    d10 = cfg.shift_for_weekday(0)
+    sat = cfg.shift_for_weekday(5)
+    d10_paid = d10.paid_hours_designated_meal if d10 else 10.0
+    sat_paid = sat.paid_hours_designated_meal if sat else 5.0
+    hours = MAX_WEEKDAY_SHIFTS_PER_2WK * d10_paid + MAX_SATURDAY_SHIFTS_PER_2WK * sat_paid
+    return round(hours / TWO_WEEK_HOURS, 2)
+
+
 def scheduled_fte(total_paid_hours: float, weeks: int) -> float:
     """scheduled_fte = total_paid_hours / (37.5 * weeks)."""
     denom = WEEKLY_FULL_TIME_HOURS * weeks
