@@ -70,6 +70,7 @@ class Nurse:
     target_fte: float = 0.0  # derived from the shift counts (see above)
     target_d10: int = 0  # desired # of 10-hour weekday shifts (0-40)
     target_d5: int = 0  # desired # of 5-hour Saturday shifts (0-10)
+    stat_days: int = 0  # paid statutory-holiday days (Art. 17): reduce worked D10
     fixed_saturdays_off: bool = False  # 25.06(B)/(E) waiver
     seniority_rank: int = 1  # 1 = most senior; conflict resolution (25.03 ethos)
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
@@ -88,6 +89,10 @@ class Nurse:
     def tolerance(self, default: float) -> float:
         return self.fte_tolerance if self.fte_tolerance is not None else default
 
+    def worked_d10(self) -> int:
+        """Weekday shifts actually scheduled (stat days are paid but not worked)."""
+        return max(0, self.target_d10 - self.stat_days)
+
     def target_hours(self, d10_paid: float, sat_paid: float) -> float:
         return self.target_d10 * d10_paid + self.target_d5 * sat_paid
 
@@ -100,7 +105,7 @@ class Config:
     weeks: int = 12  # allowed: 6, 9, 12, 18
     # Daily staffing demand by weekday short-name (Section 3.2).
     demand: dict = field(
-        default_factory=lambda: {"Mon": 4, "Wed": 4, "Fri": 4, "Sat": 2}
+        default_factory=lambda: {"Mon": 3, "Wed": 3, "Fri": 3, "Sat": 2}
     )
     # Optional per-week override: {week_index(int): {"Mon": n, ...}}.
     weekly_demand_override: dict = field(default_factory=dict)
@@ -216,15 +221,15 @@ def default_nurses() -> list[Nurse]:
     """The unit roster, in seniority order, pre-populated for the app.
 
     Shift-count targets are sized to match the default demand over 12 weeks
-    (Mon/Wed/Fri = 4 -> 144 D10 shifts; Sat = 2 -> 24 D5 shifts) so the default
+    (Mon/Wed/Fri = 3 -> 108 D10 shifts; Sat = 2 -> 24 D5 shifts) so the default
     schedule needs no extra coverage. (FTE is derived from the counts.)
     """
     return [
-        Nurse("Kathleen", target_d10=30, target_d5=6, seniority_rank=1),
-        Nurse("Adam", target_d10=30, target_d5=5, seniority_rank=2),
-        Nurse("Joane", target_d10=30, target_d5=5, seniority_rank=3),
-        Nurse("Leslie", target_d10=27, target_d5=4, seniority_rank=4),
-        Nurse("Kaitlyn", target_d10=27, target_d5=4, seniority_rank=5),
+        Nurse("Kathleen", target_d10=24, target_d5=6, seniority_rank=1),
+        Nurse("Adam", target_d10=24, target_d5=5, seniority_rank=2),
+        Nurse("Joane", target_d10=21, target_d5=5, seniority_rank=3),
+        Nurse("Leslie", target_d10=21, target_d5=4, seniority_rank=4),
+        Nurse("Kaitlyn", target_d10=18, target_d5=4, seniority_rank=5),
     ]
 
 

@@ -6,6 +6,7 @@ Run with:  streamlit run app.py
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -18,7 +19,8 @@ from dialysis_scheduler.config import (
     default_config,
 )
 from dialysis_scheduler.model import build_operating_dates
-from dialysis_scheduler.scheduler import generate_schedule
+from dialysis_scheduler.holidays import holidays_in_range
+from dialysis_scheduler.scheduler import generate_schedule, generate_schedules
 from dialysis_scheduler.validator import validate
 from dialysis_scheduler.excel_export import workbook_bytes, output_filename
 
@@ -96,13 +98,17 @@ def sidebar():
     # Paid hours assume the 30-min unpaid meal (D10 = 9.5h); missed meals are
     # paid as overtime by default, so there is no meal-designation toggle.
     cfg.meal_designated_available = False
+    # FTE flex is a fixed secondary check now (counts are the target); 0.08.
+    cfg.fte_tolerance = 0.08
 
-    # Default FTE flex (per-line overrides live in the roster table).
-    st.sidebar.subheader("Default FTE flex")
-    cfg.fte_tolerance = st.sidebar.slider(
-        "± default flex (averaged over period, 26.01)",
-        min_value=0.02, max_value=0.20, value=float(cfg.fte_tolerance), step=0.01,
-        help="Applied to any line that doesn't set its own flex in the roster.",
+    # Statutory holidays in the rotation (BCNU Art. 17), for reference.
+    stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
+    st.sidebar.subheader("Statutory holidays")
+    st.sidebar.caption(
+        f"**{len(stats)}** fall in this rotation (BCNU Art. 17): "
+        + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
+           or "none")
+        + ". Set each line's stat-shift entitlement in the roster."
     )
 
 
@@ -114,13 +120,13 @@ def roster_editor():
     st.subheader("Nurse roster")
 
     st.caption(
-        "Set each line's number of **10-hour weekday shifts (D10, 0–40)** and "
-        "**5-hour Saturday shifts (D5, 0–10)** over the rotation — these counts are "
-        "the primary target and take priority over the FTE flex. The **FTE** column "
-        "is derived from the counts (read-only). Per-line **preferences** are soft "
-        "and resolved by **seniority** (rank 1 wins). Give two lines the same "
-        "**Job share** label to stop them ever working the same day. Everyone works "
-        "≥1 Saturday per month."
+        "Set each line's number of **10-hour weekday shifts (D10, 0–40)**, "
+        "**5-hour Saturday shifts (D5, 1–10)** and **stat shifts (0–10)** over the "
+        "rotation. The counts are the primary target; stat shifts are paid "
+        "statutory-holiday days (BCNU Art. 17) that reduce worked D10 shifts. "
+        "**FTE** is derived (read-only). Preferences are soft and resolved by "
+        "**seniority**. Same **Job share** label = two lines never work the same "
+        "day. **Everyone works Saturdays** (≥1 per month)."
     )
 
     d10p, satp = cfg.d10_paid(), cfg.sat_paid()
@@ -133,11 +139,9 @@ def roster_editor():
             "name": n.name,
             "d10": int(n.target_d10),
             "d5": int(n.target_d5),
+            "stat": int(n.stat_days),
             "fte": round(hrs / denom, 3) if denom else 0.0,
-            "fte_flex": float(n.fte_tolerance) if n.fte_tolerance is not None
-            else float(cfg.fte_tolerance),
             "job_share": n.job_share_group,
-            "fixed_saturdays_off": n.fixed_saturdays_off,
             "seniority_rank": n.seniority_rank,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
@@ -159,26 +163,23 @@ def roster_editor():
                 help="Number of 10-hour weekday shifts over the rotation (0–40).",
             ),
             "d5": st.column_config.NumberColumn(
-                "D5 shifts", min_value=0, max_value=10, step=1,
-                help="Number of 5-hour Saturday shifts over the rotation (0–10).",
+                "D5 shifts", min_value=1, max_value=10, step=1,
+                help="Number of 5-hour Saturday shifts over the rotation (1–10). "
+                     "Everyone works some Saturdays.",
+            ),
+            "stat": st.column_config.NumberColumn(
+                "Stat shifts", min_value=0, max_value=10, step=1,
+                help="Paid statutory-holiday days (Art. 17); each reduces worked "
+                     "D10 shifts by one.",
             ),
             "fte": st.column_config.NumberColumn(
                 "FTE (derived)", disabled=True, format="%.3f",
                 help="Computed from the shift counts; not directly editable.",
             ),
-            "fte_flex": st.column_config.NumberColumn(
-                "FTE flex ±", min_value=0.0, max_value=0.30, step=0.01,
-                format="%.2f",
-                help="Allowed deviation from target FTE for this line "
-                     "(defaults to the sidebar value).",
-            ),
             "job_share": st.column_config.SelectboxColumn(
                 "Job share", options=["", "A", "B", "C", "D"],
                 help="Put the SAME label on two lines to job-share them — "
                      "they will never be scheduled on the same day.",
-            ),
-            "fixed_saturdays_off": st.column_config.CheckboxColumn(
-                "Fixed Sat off", help="25.06(B)/(E) waiver — never assigned Saturdays"
             ),
             "seniority_rank": st.column_config.NumberColumn(
                 "Seniority", min_value=1, step=1,
@@ -221,18 +222,13 @@ def roster_editor():
                 return int(round(float(v)))
             except (TypeError, ValueError):
                 return default
-        try:
-            flex = round(float(r["fte_flex"]), 2)
-        except (TypeError, ValueError):
-            flex = float(cfg.fte_tolerance)
         new_nurses.append(Nurse(
             name=name,
             target_d10=_int(r.get("d10")),
-            target_d5=_int(r.get("d5")),
-            fixed_saturdays_off=bool(r["fixed_saturdays_off"]),
+            target_d5=max(1, _int(r.get("d5"), 1)),  # everyone works Saturdays
+            stat_days=_int(r.get("stat")),
             seniority_rank=int(r["seniority_rank"]) if pd.notna(r["seniority_rank"]) else 1,
             unavailable_dates=dates,
-            fte_tolerance=flex,
             job_share_group=str(r.get("job_share") or "").strip(),
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
             pref_clustered=bool(r["pref_clustered"]),
@@ -243,11 +239,10 @@ def roster_editor():
     cfg.nurses = new_nurses
     cfg.apply_derived_ftes()
 
-    # Sanity check: requested D10/D5 counts vs available seats in the rotation.
+    # Sanity check: requested worked counts vs available seats in the rotation.
     op = build_operating_dates(cfg)
-    total_wd = sum(1 for o in op if not o.is_saturday)
     total_sat = sum(1 for o in op if o.is_saturday)
-    sum_d10 = sum(n.target_d10 for n in cfg.nurses)
+    worked_d10 = sum(n.worked_d10() for n in cfg.nurses)  # stat days excluded
     sum_d5 = sum(n.target_d5 for n in cfg.nurses)
     sat_seats = sum(o.demand for o in op if o.is_saturday)
     wd_seats = sum(o.demand for o in op if not o.is_saturday)
@@ -258,15 +253,16 @@ def roster_editor():
             f"{sat_seats} Saturday seats ({total_sat} Saturdays × demand). "
             "These must match for every line to hit its D5 count."
         )
-    if sum_d10 < wd_seats:
+    if worked_d10 < wd_seats:
         notes.append(
-            f"Weekday: requested D10 total = {sum_d10} is below the {wd_seats} "
-            "weekday seats needed — coverage will fall short."
+            f"Weekday: worked D10 total = {worked_d10} (after stat days) is below "
+            f"the {wd_seats} weekday seats needed — coverage forces some lines to "
+            "work above their target / stat days may not all be granted."
         )
-    elif sum_d10 > wd_seats:
+    elif worked_d10 > wd_seats:
         notes.append(
-            f"Weekday: requested D10 total = {sum_d10} exceeds {wd_seats} weekday "
-            f"seats — {sum_d10 - wd_seats} extra weekday shift(s) will be scheduled."
+            f"Weekday: worked D10 total = {worked_d10} exceeds {wd_seats} weekday "
+            f"seats — {worked_d10 - wd_seats} extra weekday shift(s) will be scheduled."
         )
     if notes:
         st.info("ℹ️ " + "  \n".join(notes))
@@ -308,132 +304,148 @@ def generate_section():
 
     st.caption(
         "Nothing is scheduled until you press **GO**. Enter all parameters and the "
-        "roster first, then click."
+        "roster first, then click. Three best-fit options (A/B/C) are produced."
     )
-    if st.button("🟢 GO — generate schedule", type="primary", width="stretch"):
+    if st.button("🟢 GO — generate 3 options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
             st.error("Start date must be a Friday. Fix it in the sidebar.")
             return
         if not cfg.nurses:
             st.error("Add at least one nurse to the roster.")
             return
-        with st.spinner("Solving…"):
-            result = generate_schedule(cfg)
-            report = validate(cfg, result) if result.operating else None
-        st.session_state.result = result
-        st.session_state.report = report
+        with st.spinner("Solving (three options)…"):
+            options = generate_schedules(cfg)
+        st.session_state.options = options
+        # Drop any prior manual edits when regenerating.
+        for k in list(st.session_state.keys()):
+            if str(k).startswith("grid_"):
+                del st.session_state[k]
 
-    result = st.session_state.get("result")
-    report = st.session_state.get("report")
-    if result is None:
+    options = st.session_state.get("options")
+    if not options:
         st.info("Configure the parameters and roster above, then press GO.")
         return
 
-    if not result.feasible and result.method == "none":
-        # Section 10.4: red banner, no file.
+    first = options[0]
+    if not first.feasible and first.method == "none":
         st.error("❌ **No feasible schedule** — generation aborted.", icon="❌")
-        for m in result.messages:
+        for m in first.messages:
             st.markdown(f"- {m}")
-        if result.binding_constraints:
+        if first.binding_constraints:
             st.markdown("**Diagnostic (which requirement is unsatisfiable):**")
-            for b in result.binding_constraints:
+            for b in first.binding_constraints:
                 st.markdown(f"> {b}")
         return
 
-    # Feasible (possibly greedy / relaxed).
-    method_msg = {
-        "cp-sat": "✅ Solved with CP-SAT.",
-        "greedy": "⚠️ CP-SAT infeasible — greedy fallback used (see diagnostics).",
-    }.get(result.method, result.status)
-    (st.success if result.method == "cp-sat" else st.warning)(method_msg)
-    for m in result.messages:
-        st.markdown(f"- {m}")
-    if result.binding_constraints and result.method == "greedy":
-        st.markdown("**Binding constraints / diagnostics:**")
-        for b in result.binding_constraints:
-            st.markdown(f"> {b}")
+    if len(options) == 1 and options[0].method == "greedy":
+        st.warning("⚠️ CP-SAT infeasible — greedy fallback used (see diagnostics).")
+        for m in options[0].messages:
+            st.markdown(f"- {m}")
 
-    # Compliance badges.
-    if report:
-        st.markdown("#### Compliance summary")
-        bcols = st.columns(min(4, len(report.rules)))
-        for i, rule in enumerate(report.rules):
-            with bcols[i % len(bcols)]:
-                st.markdown(
-                    f"{STATUS_EMOJI.get(rule.status, '')} **{rule.status}** — "
-                    f"{rule.rule}  \n<small>{rule.citation}</small>",
-                    unsafe_allow_html=True,
-                )
+    labels = [o.label or f"Option {chr(65 + i)}" for i, o in enumerate(options)]
+    tabs = st.tabs(labels)
+    for i, (tab, opt) in enumerate(zip(tabs, options)):
+        with tab:
+            _render_option(cfg, opt, i)
 
-    # Grid preview.
-    st.markdown("#### Schedule preview")
-    grid = _grid_dataframe(cfg, result)
-    st.dataframe(_style_grid(grid), width="stretch")
+
+def _render_option(cfg: Config, opt, idx: int):
+    """Render one option: editable grid -> live re-validation -> download."""
+    operating = opt.operating or build_operating_dates(cfg)
+    st.caption(
+        "Edit the grid to move shifts around — pick a cell's value (the day's "
+        "shift code, LV, or blank). Compliance and the download update live."
+    )
+
+    base_df = _grid_df(cfg, opt.assignments, operating)
+    col_cfg = {}
+    for od in operating:
+        lbl = _label(od)
+        col_cfg[lbl] = st.column_config.SelectboxColumn(
+            lbl, options=["", od.shift.code, "LV"], width="small",
+        )
+    edited = st.data_editor(
+        base_df, width="stretch", column_config=col_cfg, key=f"grid_{idx}",
+    )
+
+    # Reconstruct assignments from the (possibly edited) grid and re-validate.
+    assignments = _assignments_from_grid(edited, cfg, operating)
+    result = replace(opt, assignments=assignments)
+    report = validate(cfg, result)
+
+    # Compliance badges (issues first).
+    st.markdown("**Compliance**")
+    issues = [r for r in report.rules if r.status in ("FAIL", "WARN")]
+    if not issues:
+        st.success("All checks pass.")
+    bcols = st.columns(2)
+    for j, rule in enumerate(report.rules):
+        with bcols[j % 2]:
+            st.markdown(
+                f"{STATUS_EMOJI.get(rule.status, '')} **{rule.status}** — "
+                f"{rule.rule}  \n<small>{rule.citation}: {rule.detail}</small>",
+                unsafe_allow_html=True,
+            )
 
     # Per-nurse summary.
-    if report:
-        st.markdown("#### Per-nurse summary")
-        sdf = pd.DataFrame([{
-            "Nurse": s.name,
-            "D10": f"{s.scheduled_d10}/{s.target_d10}",
-            "D5": f"{s.scheduled_d5}/{s.target_d5}",
-            "Counts met": "✅" if (s.scheduled_d10 == s.target_d10
-                                   and s.scheduled_d5 == s.target_d5) else "⚠️",
-            "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
-            "Avg hrs/wk": s.avg_weekly_hours,
-            "Sats": f"{s.saturdays_worked}/{s.saturdays_in_period}",
-            "Worst 9-wk Sat": s.worst_9wk_sat,
-        } for s in report.nurse_summaries])
-        st.dataframe(sdf, hide_index=True, width="stretch")
+    sdf = pd.DataFrame([{
+        "Nurse": s.name,
+        "D10": f"{s.scheduled_d10}/{s.target_d10}",
+        "D5": f"{s.scheduled_d5}/{s.target_d5}",
+        "Counts met": "yes" if (s.scheduled_d10 == s.target_d10
+                                and s.scheduled_d5 == s.target_d5) else "NO",
+        "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
+        "Sats": f"{s.saturdays_worked}/{s.saturdays_in_period}",
+        "Worst 9-wk Sat": s.worst_9wk_sat,
+    } for s in report.nurse_summaries])
+    st.dataframe(sdf, hide_index=True, width="stretch")
 
-    # Download button.
-    if report:
-        data = workbook_bytes(cfg, result, report)
-        st.download_button(
-            "⬇️ Download .xlsx",
-            data=data,
-            file_name=output_filename(cfg),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-            width="stretch",
-        )
+    # Download (reflects manual edits).
+    data = workbook_bytes(cfg, result, report)
+    fn = output_filename(cfg).replace(".xlsx", f"_{(opt.label or 'A').split()[-1]}.xlsx")
+    st.download_button(
+        f"⬇️ Download {opt.label or 'option'} (.xlsx)",
+        data=data, file_name=fn,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary", width="stretch", key=f"dl_{idx}",
+    )
 
 
 def _label(od) -> str:
     return f"W{od.week_index + 1} {od.d.strftime('%a %d-%b')}"
 
 
-def _grid_dataframe(cfg: Config, result) -> pd.DataFrame:
-    operating = result.operating or build_operating_dates(cfg)
-    labels = [_label(od) for od in operating]
-    data = {label: [] for label in labels}
-    index = []
-    unavail_by_nurse = {n.name: set(n.unavailable_dates) for n in cfg.nurses}
-    for n in cfg.nurses:
-        index.append(n.name)
-        worked = result.assignments.get(n.name, {})
-        for od in operating:
-            label = _label(od)
-            code = worked.get(od.iso)
+def _grid_df(cfg: Config, assignments: dict, operating) -> pd.DataFrame:
+    unavail = {n.name: set(n.unavailable_dates) for n in cfg.nurses}
+    index = [n.name for n in cfg.nurses]
+    data = {}
+    for od in operating:
+        lbl = _label(od)
+        col = []
+        for n in cfg.nurses:
+            code = assignments.get(n.name, {}).get(od.iso)
             if code:
-                data[label].append(code)
-            elif od.iso in unavail_by_nurse[n.name]:
-                data[label].append("LV")
+                col.append(code)
+            elif od.iso in unavail[n.name]:
+                col.append("LV")
             else:
-                data[label].append("")
+                col.append("")
+        data[lbl] = col
     return pd.DataFrame(data, index=index)
 
 
-def _style_grid(df: pd.DataFrame):
-    def color(v):
-        if v == "D10":
-            return "background-color:#ADD8E6"
-        if v == "D5":
-            return "background-color:#90EE90"
-        if v == "LV":
-            return "background-color:#FFFF00"
-        return ""
-    return df.style.map(color)
+def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
+    lbl_to_od = {_label(od): od for od in operating}
+    assignments = {n.name: {} for n in cfg.nurses}
+    for lbl in df.columns:
+        od = lbl_to_od.get(lbl)
+        if od is None:
+            continue
+        for name in df.index:
+            v = str(df.at[name, lbl] or "").strip().upper()
+            if v and v != "LV":  # any work code -> assign the day's shift
+                assignments.setdefault(name, {})[od.iso] = od.shift.code
+    return assignments
 
 
 # --- main ------------------------------------------------------------------

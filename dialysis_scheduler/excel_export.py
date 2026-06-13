@@ -16,22 +16,27 @@ from openpyxl.utils import get_column_letter
 from .config import Config
 from .model import build_operating_dates
 
-# Fill colors (Section 9).
-FILL_D10 = PatternFill("solid", fgColor="ADD8E6")  # light blue
-FILL_D5 = PatternFill("solid", fgColor="90EE90")  # light green
-FILL_LV = PatternFill("solid", fgColor="FFFF00")  # yellow
-FILL_SAT_COL = PatternFill("solid", fgColor="D9D9D9")  # light gray
-FILL_HEADER = PatternFill("solid", fgColor="305496")
-FILL_SHORT = PatternFill("solid", fgColor="FF9999")  # red-ish (coverage short)
-FILL_PASS = PatternFill("solid", fgColor="C6EFCE")
-FILL_FAIL = PatternFill("solid", fgColor="FFC7CE")
-FILL_INFO = PatternFill("solid", fgColor="FFF2CC")
+# Clean black-and-white output: no decorative fills, so the workbook prints
+# cleanly in B/W. Colour is reserved to FLAG ISSUES only (coverage shortfalls
+# and FAIL/WARN compliance rows).
+FILL_D10 = None
+FILL_D5 = None
+FILL_LV = None
+FILL_SAT_COL = None
+FILL_HEADER = None
+FILL_PASS = None
+FILL_INFO = None
+FILL_SHORT = PatternFill("solid", fgColor="FF9999")  # coverage shortfall (issue)
+FILL_FAIL = PatternFill("solid", fgColor="FFC7CE")  # FAIL (issue)
+FILL_WARN = PatternFill("solid", fgColor="FFE08A")  # WARN (issue)
 
-WHITE_BOLD = Font(bold=True, color="FFFFFF")
+WHITE_BOLD = Font(bold=True)  # headers: bold black text on no fill (B/W safe)
 BOLD = Font(bold=True)
 CENTER = Alignment(horizontal="center", vertical="center")
-THIN = Side(style="thin", color="BFBFBF")
+THIN = Side(style="thin", color="000000")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
+HEADER_BORDER = Border(left=THIN, right=THIN, top=THIN,
+                       bottom=Side(style="medium", color="000000"))
 
 
 def output_filename(cfg: Config) -> str:
@@ -166,13 +171,17 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
         ("D5 = 0730-1230 (5.0h, paid). No meal period required (26.03(A) "
          "triggers only beyond 5 consecutive hours).", None),
         ("Blank = off.  LV = unavailable/approved leave.", None),
+        ("Statutory-holiday entitlement is a per-line count (see Summary/Config); "
+         "it reduces worked D10 shifts and is paid but not shown on the grid.",
+         None),
         ("Meal/rest (26.03 / 26.04): D10 30-min meal must begin by 1230 "
          "(<=5.0h after start); two paid 15-min rests per D10. D5: one paid "
          "15-min rest (shift >= 4h).", None),
         ("Extended Work Day (25.11 / 26.01): D10 exceeds the 7.5h normal daily "
          "full shift -- verify against your Extended Work Day Memorandum terms.",
          None),
-        ("Saturday columns shaded gray. Red = coverage shortfall.", None),
+        ("Cells are shaded only to flag problems (red = coverage shortfall); the "
+         "grid is otherwise plain for clean black-and-white printing.", None),
     ]
     for i, (text, font) in enumerate(legend):
         c = ws.cell(legend_row + i, 1, value=text)
@@ -207,8 +216,8 @@ def _build_summary_sheet(wb: Workbook, report):
         for j, v in enumerate(vals, start=1):
             c = ws.cell(r, j, value=v)
             fill = None
-            if j == 4:
-                fill = FILL_PASS if counts_met else FILL_INFO
+            if j == 4 and not counts_met:  # flag only the issue
+                fill = FILL_WARN
             _style_cell(c, fill, align=Alignment(
                 horizontal="left" if j == 1 else "center"))
     ws.freeze_panes = "A2"
@@ -228,10 +237,8 @@ def _build_compliance_sheet(wb: Workbook, report):
     ws.column_dimensions["C"].width = 10
     ws.column_dimensions["D"].width = 80
     for r, rule in enumerate(report.rules, start=2):
-        fill = {
-            "PASS": FILL_PASS, "FAIL": FILL_FAIL,
-            "INFO": FILL_INFO, "WARN": FILL_INFO,
-        }.get(rule.status)
+        # Only colour the problems (FAIL/WARN); PASS/INFO stay plain for B/W.
+        fill = {"FAIL": FILL_FAIL, "WARN": FILL_WARN}.get(rule.status)
         _style_cell(ws.cell(r, 1, value=rule.rule), align=Alignment(
             horizontal="left", wrap_text=True, vertical="top"))
         _style_cell(ws.cell(r, 2, value=rule.citation), align=Alignment(
@@ -292,8 +299,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     c = ws.cell(r, 1, value="Roster")
     c.font = BOLD
     r += 1
-    hdr = ["Name", "D10", "D5", "FTE (derived)", "FTE flex", "Job share",
-           "Fixed Sat off", "Seniority", "Preferences", "Unavailable dates"]
+    hdr = ["Name", "D10", "D5", "Stat", "FTE (derived)", "Job share",
+           "Seniority", "Preferences", "Unavailable dates"]
     for j, h in enumerate(hdr, start=1):
         cc = ws.cell(r, j, value=h)
         _style_cell(cc, FILL_HEADER, WHITE_BOLD)
@@ -313,13 +320,12 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
         ws.cell(r, 1, value=nurse.name)
         ws.cell(r, 2, value=nurse.target_d10)
         ws.cell(r, 3, value=nurse.target_d5)
-        ws.cell(r, 4, value=nurse.target_fte)
-        ws.cell(r, 5, value=nurse.tolerance(cfg.fte_tolerance))
+        ws.cell(r, 4, value=nurse.stat_days)
+        ws.cell(r, 5, value=nurse.target_fte)
         ws.cell(r, 6, value=nurse.job_share_group or "-")
-        ws.cell(r, 7, value="yes" if nurse.fixed_saturdays_off else "no")
-        ws.cell(r, 8, value=nurse.seniority_rank)
-        ws.cell(r, 9, value=", ".join(prefs) if prefs else "-")
-        ws.cell(r, 10, value=", ".join(nurse.unavailable_dates))
+        ws.cell(r, 7, value=nurse.seniority_rank)
+        ws.cell(r, 8, value=", ".join(prefs) if prefs else "-")
+        ws.cell(r, 9, value=", ".join(nurse.unavailable_dates))
         r += 1
 
 

@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from .config import Config
 from .model import OperatingDate, saturday_dates
 from .fte import scheduled_fte
+from .holidays import holidays_in_range
 from .scheduler import (
     SAT_MAX_PER_9WK,
     SAT_WINDOW_WEEKS,
@@ -252,29 +253,38 @@ def validate(cfg: Config, result) -> ValidationReport:
         worked = _nurse_worked_dates(assignments, nurse.name)
         d10 = sum(1 for i in worked if i in od_by_iso and not od_by_iso[i].is_saturday)
         d5 = sum(1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday)
-        if d10 != nurse.target_d10 or d5 != nurse.target_d5:
+        # Worked D10 target excludes paid stat days (those reduce worked shifts).
+        wd10 = nurse.worked_d10()
+        if d10 != wd10 or d5 != nurse.target_d5:
             sc_ok = False
+            stat = f" (+{nurse.stat_days} stat)" if nurse.stat_days else ""
             sc_lines.append(
-                f"{nurse.name}: D10 {d10}/{nurse.target_d10}, D5 {d5}/{nurse.target_d5}"
+                f"{nurse.name}: D10 {d10}/{wd10}{stat}, D5 {d5}/{nurse.target_d5}"
             )
     report.rules.append(
         RuleResult(
             "Shift-count targets met (D10 + D5 per line)",
             "Unit policy (primary)",
             "PASS" if sc_ok else "WARN",
-            "Every line hits its requested shift counts."
+            "Every line hits its requested worked shift counts (stat days excluded)."
             if sc_ok else "Off target -> " + "; ".join(sc_lines),
         )
     )
 
-    # --- FTE within flex (secondary to shift counts) ----------------------
+    # --- FTE within flex (secondary; vs the *worked* target, stats excluded)
+    d10_paid, sat_paid = cfg.d10_paid(), cfg.sat_paid()
+    period_full = cfg.weekly_full_time_hours * cfg.weeks
     fte_all_ok = True
     fte_lines = []
     for nurse in cfg.nurses:
         worked = _nurse_worked_dates(assignments, nurse.name)
         total_hours = sum(od_by_iso[i].paid_hours for i in worked if i in od_by_iso)
         sf = scheduled_fte(total_hours, cfg.weeks)
-        dev = sf - nurse.target_fte
+        # Compare against the worked-hours target (stat days are paid separately,
+        # not scheduled), so honouring stat time off does not read as under-FTE.
+        worked_target_hours = nurse.worked_d10() * d10_paid + nurse.target_d5 * sat_paid
+        worked_target_fte = worked_target_hours / period_full if period_full else 0.0
+        dev = sf - worked_target_fte
         line_tol = nurse.tolerance(cfg.fte_tolerance)
         within = abs(dev) <= line_tol + 1e-9
         if not within:
@@ -296,7 +306,7 @@ def validate(cfg: Config, result) -> ValidationReport:
         report.nurse_summaries.append(
             NurseSummary(
                 name=nurse.name,
-                target_fte=nurse.target_fte,
+                target_fte=round(worked_target_fte, 3),
                 scheduled_fte=round(sf, 3),
                 deviation=round(dev, 3),
                 total_hours=round(total_hours, 1),
@@ -305,7 +315,7 @@ def validate(cfg: Config, result) -> ValidationReport:
                 saturdays_in_period=elig_sat if not nurse.fixed_saturdays_off else 0,
                 worst_9wk_sat=worst,
                 within_tolerance=within,
-                target_d10=nurse.target_d10,
+                target_d10=nurse.worked_d10(),
                 scheduled_d10=n_d10,
                 target_d5=nurse.target_d5,
                 scheduled_d5=n_sat_worked,
@@ -357,6 +367,25 @@ def validate(cfg: Config, result) -> ValidationReport:
                    if all_ok else "Below target -> " + "; ".join(worst_lines)),
             )
         )
+
+    # --- Statutory holidays in the period (Art. 17) -----------------------
+    end_excl = cfg.start + timedelta(weeks=cfg.weeks)
+    stats = holidays_in_range(cfg.start, end_excl)
+    stat_credit = ", ".join(
+        f"{n.name} {n.stat_days}" for n in cfg.nurses if n.stat_days
+    )
+    report.rules.append(
+        RuleResult(
+            "Statutory holidays (paid entitlement)",
+            "BCNU Art. 17",
+            "INFO",
+            f"{len(stats)} stat holiday(s) fall in this rotation: "
+            + (", ".join(f"{d.strftime('%a %d-%b')} {name}" for d, name in stats)
+               or "none")
+            + ". Stat days are paid (a weekday-shift equivalent) and reduce worked "
+            "D10 shifts. Per-line stat credit: " + (stat_credit or "none set") + ".",
+        )
+    )
 
     # --- Meal-window note for D10 (informational, 26.03/26.04) ------------
     report.rules.append(

@@ -60,6 +60,11 @@ DET_TIME_LIMIT = 12.0  # deterministic time units (solution plateaus well before
 SOLVER_TIME_LIMIT_S = 90.0  # wall-clock safety cap
 RANDOM_SEED = 42
 
+# "Three best fits": number of alternatives and how different they must be.
+N_ALTERNATIVES = 3
+DIVERSITY_MIN_DIFF = 12  # min differing assignments between alternatives
+ALT_DET_TIME = 6.0  # smaller per-solve budget when generating several
+
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
 SAT_MAX_PER_9WK = 6
 SAT_WINDOW_WEEKS = 9
@@ -81,6 +86,8 @@ class ScheduleResult:
     binding_constraints: list = field(default_factory=list)
     tolerance_used: float = 0.0
     drifted_nurses: list = field(default_factory=list)
+    label: str = ""  # "Option A/B/C" when several alternatives are produced
+    xvals: dict = field(default_factory=dict)  # (ni, oi) -> 0/1, for diversity
 
 
 # --- Feasibility pre-checks (Section 7.3) ---------------------------------
@@ -221,6 +228,8 @@ def _sat_cap_for_span(weeks: int, span_weeks: int) -> int:
 def _solve_cpsat(
     cfg: Config,
     operating: list[OperatingDate],
+    previous: list[dict] | None = None,
+    det_time: float = DET_TIME_LIMIT,
 ) -> ScheduleResult:
     model = cp_model.CpModel()
     nurses = cfg.nurses
@@ -343,9 +352,10 @@ def _solve_cpsat(
             for oi, od in enumerate(operating)
             if od.is_saturday and (ni, oi) in x
         )
-        d10_dev = model.NewIntVar(0, n_wd_days + nurse.target_d10, f"d10dev_{ni}")
-        model.Add(d10_dev >= d10_actual - nurse.target_d10)
-        model.Add(d10_dev >= nurse.target_d10 - d10_actual)
+        worked_d10 = nurse.worked_d10()  # target minus paid stat days (Art. 17)
+        d10_dev = model.NewIntVar(0, n_wd_days + worked_d10, f"d10dev_{ni}")
+        model.Add(d10_dev >= d10_actual - worked_d10)
+        model.Add(d10_dev >= worked_d10 - d10_actual)
         obj_terms.append(W_SHIFT_D10 * d10_dev)
 
         d5_dev = model.NewIntVar(0, max_sat + nurse.target_d5, f"d5dev_{ni}")
@@ -421,7 +431,8 @@ def _solve_cpsat(
     d10p_hh = half_hours(cfg.d10_paid())
     satp_hh = half_hours(cfg.sat_paid())
     for ni, nurse in enumerate(nurses):
-        target_hh = nurse.target_d10 * d10p_hh + nurse.target_d5 * satp_hh
+        # Worked-hours target (stat days are paid but not worked).
+        target_hh = nurse.worked_d10() * d10p_hh + nurse.target_d5 * satp_hh
         max_hh = half_hours(period_full)
         dev = model.NewIntVar(0, max_hh + target_hh, f"ftedev_{ni}")
         model.Add(dev >= nurse_hours_expr[ni] - target_hh)
@@ -514,28 +525,41 @@ def _solve_cpsat(
             model.Add(short >= THREE_OF_FOUR_MIN_ACTIVE - window_active)
             obj_terms.append(W_THREE_OF_FOUR * short)
 
+    # Diversity: force each alternative to differ from earlier ones by at least
+    # DIVERSITY_MIN_DIFF variable assignments (Hamming distance), so the three
+    # "best fits" are genuinely different lines, not cosmetic shuffles.
+    for prev in (previous or []):
+        dist_terms = []
+        for key, var in x.items():
+            pv = prev.get(key, 0)
+            dist_terms.append((1 - var) if pv == 1 else var)
+        if dist_terms:
+            model.Add(sum(dist_terms) >= min(DIVERSITY_MIN_DIFF, len(dist_terms)))
+
     model.Minimize(sum(obj_terms))
 
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = RANDOM_SEED
-    # Reproducibility (Section 7.4): a single worker plus a *deterministic*
-    # time limit makes the stopping point independent of wall-clock speed, so
-    # identical inputs always yield byte-identical schedules. A generous
-    # wall-clock cap guards against pathological cases on slow hardware.
+    # Reproducibility: a single worker plus a *deterministic* time limit makes
+    # the stopping point independent of wall-clock speed, so identical inputs
+    # always yield byte-identical schedules. A generous wall-clock cap guards
+    # against pathological cases on slow hardware.
     solver.parameters.num_search_workers = 1
-    solver.parameters.max_deterministic_time = DET_TIME_LIMIT
+    solver.parameters.max_deterministic_time = det_time
     solver.parameters.max_time_in_seconds = SOLVER_TIME_LIMIT_S
     status = solver.Solve(model)
 
     status_name = solver.StatusName(status)
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         assignments = _extract_assignments(cfg, operating, x, solver)
+        xvals = {key: int(solver.Value(var)) for key, var in x.items()}
         return ScheduleResult(
             feasible=True,
             method="cp-sat",
             status=status_name,
             assignments=assignments,
             operating=operating,
+            xvals=xvals,
         )
     return ScheduleResult(
         feasible=False,
@@ -740,34 +764,50 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 # --- Public entry point ----------------------------------------------------
 
 
-def generate_schedule(cfg: Config) -> ScheduleResult:
-    """Full generation flow."""
+def generate_schedules(cfg: Config, n: int = N_ALTERNATIVES) -> list[ScheduleResult]:
+    """Generate up to `n` distinct near-optimal schedules ("best fits").
+
+    The first is the optimum; each subsequent one is forced to differ from all
+    earlier ones (Hamming distance >= DIVERSITY_MIN_DIFF). Returns a single
+    infeasible/greedy result in a one-item list if no CP-SAT solution exists.
+    """
     cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
     operating = build_operating_dates(cfg)
 
-    # Cheap pre-checks first.
     cov = coverage_feasibility_check(cfg, operating)
     sat = saturday_feasibility_check(cfg, operating)
     month = sat_per_month_feasibility_check(cfg, operating)
     if not cov.ok or not sat.ok or not month.ok:
         diag = _diagnose(cfg, operating)
-        return ScheduleResult(
+        return [ScheduleResult(
             feasible=False,
             method="none",
             status="PRECHECK_INFEASIBLE",
             operating=operating,
             messages=cov.messages + sat.messages + month.messages,
             binding_constraints=diag,
-        )
+        )]
 
-    # 1. CP-SAT.
-    res = _solve_cpsat(cfg, operating)
-    if res.feasible:
-        return res
+    results: list[ScheduleResult] = []
+    previous: list[dict] = []
+    det = DET_TIME_LIMIT if n <= 1 else ALT_DET_TIME
+    for i in range(max(1, n)):
+        res = _solve_cpsat(cfg, operating, previous=previous, det_time=det)
+        if not res.feasible:
+            if i == 0:
+                diag = _diagnose(cfg, operating)
+                greedy = _greedy(cfg, operating)
+                greedy.binding_constraints = diag + greedy.binding_constraints
+                greedy.messages = diag + greedy.messages
+                greedy.label = "Option A"
+                return [greedy]
+            break  # fewer than n distinct alternatives exist
+        res.label = f"Option {chr(ord('A') + i)}"
+        results.append(res)
+        previous.append(res.xvals)
+    return results
 
-    # 2. Diagnostic pass + greedy fallback.
-    diag = _diagnose(cfg, operating)
-    greedy = _greedy(cfg, operating)
-    greedy.binding_constraints = diag + greedy.binding_constraints
-    greedy.messages = diag + greedy.messages
-    return greedy
+
+def generate_schedule(cfg: Config) -> ScheduleResult:
+    """Single best schedule (back-compat wrapper)."""
+    return generate_schedules(cfg, n=1)[0]

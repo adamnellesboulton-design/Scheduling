@@ -47,22 +47,28 @@ streamlit run app.py
 Then in the browser:
 
 1. Set the **schedule period** (start date must be a Friday; rotation length is
-   freely selectable, default 12 weeks, minimum 6), **daily demand** per
-   M/W/F/S, and the **default FTE flex** in the sidebar.
+   freely selectable, default 12 weeks, minimum 6) and the **daily demand** per
+   M/W/F/S in the sidebar (default: weekday minimum **3**, Saturday exactly **2**).
+   The sidebar also lists the **statutory holidays** (BCNU Art. 17) in the period.
 2. Edit the **roster** table:
-   - **D10 shifts (0–40)** and **D5 shifts (0–10)**: the number of 10-hour
-     weekday and 5-hour Saturday shifts each line should work over the rotation.
-     These counts are the **primary target**, prioritized over the FTE flex.
-     **FTE** is derived from the counts (read-only).
-   - **FTE flex ±** is per line, defaulting to the sidebar value (±0.08).
+   - **D10 shifts (0–40)**, **D5 shifts (1–10)** and **Stat shifts (0–10)**: the
+     10-hour weekday, 5-hour Saturday, and paid statutory-holiday counts each
+     line works over the rotation. The counts are the **primary target**; stat
+     shifts are paid (Art. 17) and reduce worked D10 shifts. **FTE** is derived
+     (read-only). **Everyone works Saturdays** (D5 ≥ 1, plus ≥ 1 per month).
    - **Job share**: give two lines the same label (A/B/…) and they will never
      be scheduled on the same day (two people splitting one line).
    - **Line preferences** (tick boxes): non-consecutive Saturdays, clustered
      shifts, and off-day preferences for Monday / Wednesday / Friday. These are
      soft and **conflicts are resolved by seniority** (rank 1 wins).
-3. Press **GO** — nothing is scheduled until you do. On success you get a styled
-   grid preview, compliance badges, a per-nurse summary, and a **Download .xlsx**
-   button. On infeasibility you get a red banner explaining which requirement binds.
+3. Press **GO** — nothing is scheduled until you do. You get **three best-fit
+   options (A / B / C)** in tabs; each has an **editable grid** (click a cell to
+   move a shift, and compliance + download update live) and its own
+   **Download .xlsx**. On infeasibility you get a banner explaining which
+   requirement binds.
+
+The Excel output is **plain black-and-white** — colour is used only to flag
+problems (coverage shortfalls and FAIL/WARN rows) so it prints cleanly.
 
 Configuration is persisted to a local JSON file (`dialysis_config.json` by
 default) so settings survive sessions — there is no database.
@@ -101,14 +107,13 @@ and checked secondarily; the shift counts are what the generator targets.
   penalized); Saturday is **exact** (no extras).
 - **H2** ≤ 6 Saturdays in every rolling 9-week window (25.06(E); for periods
   shorter than 9 weeks a proportional cap is applied).
-- **H3** No assignment on unavailable dates, or Saturdays for
-  `fixed_saturdays_off` nurses.
+- **H3** No assignment on a nurse's unavailable dates.
 - **H4** ≤ 6 consecutive calendar days (structurally bounded to 2 here;
   asserted anyway).
 - **H6** One shift per nurse per day.
 - **H8** Job-share lines (same label) never work the same day.
-- **H9** Everyone (not waived off Saturdays) works **≥ 1 Saturday per rolling
-  4-week window** ("at least one Saturday per month").
+- **H9** **Everyone** works **≥ 1 Saturday per rolling 4-week window** ("at
+  least one Saturday per month") — there is no Saturday waiver.
 
 (FTE is no longer a hard band — the shift counts are the target, with FTE flex
 as a secondary, reported check.)

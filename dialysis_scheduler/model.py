@@ -67,12 +67,9 @@ def saturday_dates(operating: list[OperatingDate]) -> list[OperatingDate]:
 
 
 def nurse_eligible_for(cfg_nurse, od: OperatingDate) -> bool:
-    """True if the nurse may legally be assigned this operating date (H3).
+    """True if the nurse may be assigned this operating date (H3).
 
-    Honours unavailable_dates and the fixed_saturdays_off waiver.
+    Honours only unavailable_dates -- everyone works Saturdays (there is no
+    blanket Saturday waiver; the >=1 Saturday/month rule applies to all).
     """
-    if od.iso in set(cfg_nurse.unavailable_dates):
-        return False
-    if od.is_saturday and cfg_nurse.fixed_saturdays_off:
-        return False
-    return True
+    return od.iso not in set(cfg_nurse.unavailable_dates)
