@@ -46,10 +46,11 @@ def _cfg() -> Config:
 
 def sidebar():
     cfg = _cfg()
-    st.sidebar.header("Configuration")
+    st.sidebar.header("⚙️ Configuration")
+    st.sidebar.caption("Set the period and demand here; build the roster on the right.")
 
     # Load / save JSON config.
-    with st.sidebar.expander("Load / save config (JSON)", expanded=False):
+    with st.sidebar.expander("💾 Load / save config (JSON)", expanded=False):
         path = st.text_input("Config file path", value=DEFAULT_CONFIG_PATH)
         c1, c2 = st.columns(2)
         if c1.button("Load", width="stretch"):
@@ -73,7 +74,7 @@ def sidebar():
                 st.error(f"Invalid config: {e}")
 
     # Schedule period.
-    st.sidebar.subheader("Schedule period")
+    st.sidebar.subheader("📅 Schedule period")
     start = st.sidebar.date_input("Start date (must be a Friday)", value=cfg.start)
     if start.weekday() != 4:
         st.sidebar.error("Start date must be a Friday — the rotation starts Friday.")
@@ -87,7 +88,8 @@ def sidebar():
     cfg.weeks = int(weeks)
 
     # Daily staffing demand.
-    st.sidebar.subheader("Daily staffing demand (RNs)")
+    st.sidebar.subheader("👥 Nurses needed per day")
+    st.sidebar.caption("Weekdays are a minimum (extras allowed); Saturday is exact.")
     cols = st.sidebar.columns(4)
     for i, day in enumerate(["Mon", "Wed", "Fri", "Sat"]):
         cfg.demand[day] = int(
@@ -103,7 +105,7 @@ def sidebar():
 
     # Statutory holidays in the rotation (BCNU Art. 17), for reference.
     stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
-    st.sidebar.subheader("Statutory holidays")
+    st.sidebar.subheader("🗓️ Statutory holidays")
     st.sidebar.caption(
         f"**{len(stats)}** fall in this rotation (BCNU Art. 17): "
         + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
@@ -117,7 +119,7 @@ def sidebar():
 
 def roster_editor():
     cfg = _cfg()
-    st.subheader("Nurse roster")
+    st.header("👩‍⚕️ Nurse roster")
 
     st.caption(
         "Set each line's number of **10-hour weekday shifts (D10, 0–40)**, "
@@ -292,14 +294,9 @@ def _parse_dates(raw: str) -> list[str]:
 
 def generate_section():
     cfg = _cfg()
+    st.header("Generate the schedule")
 
-    # Compliance banners (non-blocking).
-    st.warning(
-        "**Extended Work Day:** D10 (10.0h) exceeds the 7.5h normal daily full "
-        "shift (26.01). Verify shift lengths against your Extended Work Day "
-        "Memorandum terms (25.11).",
-        icon="⚠️",
-    )
+    # Compliance reminders, tucked away to keep the action area clean.
     lead_days = (cfg.start - date.today()).days
     if lead_days < 42:
         st.warning(
@@ -307,10 +304,20 @@ def generate_section():
             "The master schedule must be posted 6 weeks in advance.",
             icon="⚠️",
         )
+    with st.expander("Compliance reminders"):
+        st.markdown(
+            "- **Extended Work Day (25.11 / 26.01):** D10 is 10 h, beyond the 7.5 h "
+            "normal daily shift — verify against your EWD Memorandum.\n"
+            "- **Missed meals** are paid as overtime (Art. 27); payroll is not "
+            "priced here.\n"
+            "- **Off-duty consecutiveness (25.06(D))** can't be met on a "
+            "Mon/Wed/Fri/Sat unit (isolated Tue/Thu closures) — written agreement "
+            "recommended."
+        )
 
     st.caption(
-        "Nothing is scheduled until you press **GO**. Enter all parameters and the "
-        "roster first, then click. Three best-fit options (A/B/C) are produced."
+        "Nothing is scheduled until you press **GO** — three best-fit options "
+        "(A / B / C) are produced from the parameters and roster above."
     )
     if st.button("🟢 GO — generate 3 options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
@@ -319,34 +326,45 @@ def generate_section():
         if not cfg.nurses:
             st.error("Add at least one nurse to the roster.")
             return
-        with st.spinner("Solving (three options)…"):
+        with st.spinner("Solving three options…"):
             options = generate_schedules(cfg)
         st.session_state.options = options
         # Drop any prior manual edits when regenerating.
         for k in list(st.session_state.keys()):
-            if str(k).startswith("grid_"):
+            if str(k).startswith(("grid_", "edit_")):
                 del st.session_state[k]
+        st.session_state.pop("_wb_cache", None)
 
     options = st.session_state.get("options")
     if not options:
-        st.info("Configure the parameters and roster above, then press GO.")
+        st.info("Configure the parameters and roster above, then press **GO**.")
         return
 
     first = options[0]
     if not first.feasible and first.method == "none":
-        st.error("❌ **No feasible schedule** — generation aborted.", icon="❌")
-        for m in first.messages:
+        st.error("❌ **No feasible schedule** — nothing generated.", icon="❌")
+        st.markdown("**Why, and how to fix it:**")
+        for m in (first.binding_constraints or first.messages):
             st.markdown(f"- {m}")
-        if first.binding_constraints:
-            st.markdown("**Diagnostic (which requirement is unsatisfiable):**")
-            for b in first.binding_constraints:
-                st.markdown(f"> {b}")
         return
 
     if len(options) == 1 and options[0].method == "greedy":
-        st.warning("⚠️ CP-SAT infeasible — greedy fallback used (see diagnostics).")
+        st.warning("⚠️ No perfect schedule exists — a best-effort fallback is shown.")
         for m in options[0].messages:
             st.markdown(f"- {m}")
+
+    # At-a-glance figures for the run.
+    op = build_operating_dates(cfg)
+    wd_shifts = sum(o.demand for o in op if not o.is_saturday)
+    sat_shifts = sum(o.demand for o in op if o.is_saturday)
+    n_stats = len(holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks)))
+    m = st.columns(5)
+    m[0].metric("Options", len(options))
+    m[1].metric("Weeks", cfg.weeks)
+    m[2].metric("Weekday shifts", wd_shifts)
+    m[3].metric("Saturday shifts", sat_shifts)
+    m[4].metric("Stat holidays", n_stats)
+    st.caption("Compare the options in the tabs below, then download your pick.")
 
     labels = [o.label or f"Option {chr(65 + i)}" for i, o in enumerate(options)]
     tabs = st.tabs(labels)
@@ -497,12 +515,25 @@ def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
 def main():
     _init_state()
     st.title("🩺 Pediatric Dialysis Unit Scheduler")
-    st.caption(
-        "BC Children's Hospital hemodialysis unit · BCNU Provincial Collective "
-        "Agreement (Art. 25, 26). Generates a compliant master schedule and "
-        "exports a formatted Excel workbook."
+    st.markdown(
+        "##### BC Children's Hospital · Hemodialysis · "
+        "BCNU Provincial Collective Agreement (Art. 25–26)"
     )
+    with st.expander("How this works", expanded=False):
+        st.markdown(
+            "- The unit runs **Fri / Sat / Mon / Wed** each week (rotation starts "
+            "Friday). Saturdays are **D5** (5 h); weekdays are **D10** (10 h).\n"
+            "- In the **roster**, give each nurse their **D10**, **D5** and "
+            "**stat-shift** counts. The generator hits those counts while keeping "
+            "the schedule compliant.\n"
+            "- Press **GO** for **three best-fit options**. Open a tab, review the "
+            "status banner, optionally **edit** the grid by hand, then "
+            "**download** the Excel.\n"
+            "- The Excel prints clean in black-and-white; colour flags only "
+            "problems."
+        )
     sidebar()
+    st.divider()
     roster_editor()
     st.divider()
     generate_section()

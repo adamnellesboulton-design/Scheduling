@@ -12,6 +12,7 @@ from io import BytesIO
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.properties import PageSetupProperties
 
 from .config import Config
 from .model import build_operating_dates
@@ -43,6 +44,26 @@ def output_filename(cfg: Config) -> str:
     return f"dialysis_schedule_{start.isoformat()}_{end.isoformat()}.xlsx"
 
 
+def _print_setup(ws, subtitle: str, landscape: bool = True, period: str = "",
+                 option: str = ""):
+    """Landscape, fit-to-width, with a printed title header/footer.
+
+    The header/footer print at the top/bottom of every page without shifting any
+    cells, so the grid layout is untouched.
+    """
+    ws.page_setup.orientation = "landscape" if landscape else "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+    ws.print_options.horizontalCentered = True
+    right = " | ".join(p for p in (period, option) if p)
+    ws.oddHeader.left.text = "BC Children's Hospital — Pediatric Dialysis Unit"
+    ws.oddHeader.center.text = subtitle
+    ws.oddHeader.right.text = right
+    ws.oddFooter.left.text = "Generated &D"
+    ws.oddFooter.right.text = "Page &P of &N"
+
+
 def _style_cell(cell, fill=None, font=None, align=CENTER, border=True):
     if fill:
         cell.fill = fill
@@ -55,10 +76,20 @@ def _style_cell(cell, fill=None, font=None, align=CENTER, border=True):
 
 def build_workbook(cfg: Config, result, report) -> Workbook:
     wb = Workbook()
+    start = cfg.start
+    end = start + timedelta(weeks=cfg.weeks) - timedelta(days=1)
+    period = f"{start.strftime('%d %b %Y')} – {end.strftime('%d %b %Y')}"
+    option = getattr(result, "label", "") or ""
+
     _build_schedule_sheet(wb, cfg, result)
     _build_summary_sheet(wb, report)
     _build_compliance_sheet(wb, report)
     _build_config_sheet(wb, cfg, result)
+
+    _print_setup(wb["Schedule"], "Master Schedule", True, period, option)
+    _print_setup(wb["Summary"], "Per-nurse Summary", False, period, option)
+    _print_setup(wb["Compliance"], "Compliance Report", False, period, option)
+    _print_setup(wb["Config"], "Configuration Snapshot", False, period, option)
     return wb
 
 
