@@ -59,12 +59,12 @@ Then in the browser:
    - **Job share**: give two lines the same label (A/B/…) and they will never
      be scheduled on the same day (two people splitting one line).
    - **Line preferences** (tick boxes): non-consecutive Saturdays, clustered
-     shifts, and off-day preferences for Monday / Wednesday / Friday. These are
-     soft and **conflicts are resolved by seniority** (rank 1 wins).
-3. Press **GO** — nothing is scheduled until you do. You get **three best-fit
-   options (A / B / C)** in tabs; each has an **editable grid** (click a cell to
-   move a shift, and compliance + download update live) and its own
-   **Download .xlsx**. On infeasibility you get a banner explaining which
+     shifts, and off-day preferences for Monday / Wednesday / Friday — honoured
+     most in the preference-maximizing option.
+3. Press **GO** — nothing is scheduled until you do. You get **three options —
+   preference-, equity- and cluster-maximizing** — in tabs; each has an
+   **editable grid** (click a cell to move a shift, compliance + download update
+   live) and its own **Download .xlsx**. On infeasibility you get a banner explaining which
    requirement binds.
 
 The Excel output is **plain black-and-white** — colour is used only to flag
@@ -125,24 +125,24 @@ and checked secondarily; the shift counts are what the generator targets.
 (FTE is no longer a hard band — the shift counts are the target, with FTE flex
 as a secondary, reported check.)
 
-### Soft objectives (weighted, descending priority)
+### Soft objectives — three options per run
 
-1. **Shift-count matching (primary)** — hit each line's requested D10 (weekday)
-   and D5 (Saturday) counts. Saturday counts carry the most weight; this is
-   prioritized over the FTE flex.
-2. **Minimize weekday extras** — over-staffing is tolerated off Saturday but
-   avoided where possible.
-3. **Low-FTE engagement** — lines below 0.30 derived FTE are pushed to work in
-   ≥3 of every rolling 4 weeks.
-4. **Line preferences** — each ticked preference (non-consecutive Saturdays,
-   clustered shifts → longer consecutive days off, off Mon/Wed/Fri) is rewarded,
-   weighted by seniority so the **senior nurse wins when two preferences
-   conflict**.
-5. **Consistency** — penalize week-over-week changes in each nurse's weekday
-   line, driving a stable repeating rotation.
-6. **Weekday equity within an FTE class**, then minor **derived-FTE deviation**.
+Every option satisfies all hard constraints and hits each line's **shift counts**
+(D10 weekday + D5 Saturday, Saturday weighted highest), minimizes weekday
+over-staffing, keeps low-FTE lines engaged (≥3 of every 4 weeks), and applies a
+minor FTE smoother. **Seniority is not used** in generation — lines are picked
+by seniority afterward, so the schedule is re-chosen anyway.
 
-Ties break by seniority (senior nurses get first pick of off-Saturdays).
+The three options differ only in which **secondary goal** they push:
+
+| Option | Maximizes |
+|--------|-----------|
+| **Preference-maximizing** | Satisfies the ticked line preferences (off Mon/Wed/Fri, non-consecutive Saturdays, clustered shifts). |
+| **Equity-maximizing** | Balances weekday types across nurses and spaces each nurse's Saturdays evenly. |
+| **Cluster-maximizing** | Groups everyone's shifts so off-stretches are long and contiguous (most consecutive days off). |
+
+Each is solved independently and **deterministically**, so the same inputs
+reproduce the same three schedules. Pick one, optionally hand-edit it, download.
 
 ### Stat days (BCNU Art. 17)
 
@@ -162,10 +162,10 @@ shortfall. The app's info note shows the worked-vs-seats balance.
 2. **Cheap pre-checks** — per-day capacity (incl. job-share lines counting once),
    the 25.06(E) Saturday cap, and the ≥1-Saturday-per-month seat count. Any
    failure returns a plain-language reason without invoking the solver.
-3. **CP-SAT × 3** — solve once for the optimum, then twice more with a Hamming
-   diversity cut (≥ 12 differing assignments) to yield **Options A/B/C**. Each
-   solve is **deterministic** (single worker + deterministic time limit), so the
-   same inputs reproduce the same schedules byte-for-byte.
+3. **CP-SAT × 3 profiles** — one solve per objective profile (preference /
+   equity / cluster). Each is **deterministic** (single worker + deterministic
+   time limit), so the same inputs reproduce the same three schedules
+   byte-for-byte.
 4. **Greedy fallback** — if CP-SAT finds nothing, a diagnostic pass names the
    binding constraint family and a greedy pass fills coverage best-effort while
    still honouring job share and the Saturday cap.
@@ -238,8 +238,8 @@ Known scaling considerations before multi-unit rollout:
   in every 4-week window — true for a 5-nurse unit, not for large pools. Make the
   cadence per-unit configurable (e.g. ≥1 weekend in N).
 - **Solver size.** Variables ≈ nurses × operating-days. A 12-week unit is tiny;
-  hospital-wide needs per-unit decomposition or a longer/parallel solve budget,
-  and the 3-option diversity pass should become optional.
+  hospital-wide needs per-unit decomposition or a longer/parallel solve budget
+  (the three profiles solve independently and could run in parallel).
 - **Shift model.** Two shift types (D10/D5) are hard-coded in places (Saturday =
   D5). Generalize to arbitrary shift definitions with per-shift demand.
 - **Out-of-scope items below** (vacation, exchanges, premiums, payroll) become

@@ -104,7 +104,7 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
 
     # Header rows: row1 week numbers, row2 date labels.
     ws.cell(row=1, column=1, value="Nurse")
-    ws.cell(row=2, column=1, value="(seniority)")
+    ws.cell(row=2, column=1, value="")
     _style_cell(ws.cell(1, 1), FILL_HEADER, WHITE_BOLD)
     _style_cell(ws.cell(2, 1), FILL_HEADER, WHITE_BOLD)
 
@@ -129,7 +129,7 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
 
     for r, nurse in enumerate(cfg.nurses):
         row = first_data_row + r
-        name_cell = ws.cell(row, 1, value=f"{nurse.name} (#{nurse.seniority_rank})")
+        name_cell = ws.cell(row, 1, value=nurse.name)
         _style_cell(name_cell, font=BOLD, align=Alignment(horizontal="left"))
         worked = assignments.get(nurse.name, {})
         unavailable = set(nurse.unavailable_dates)
@@ -329,7 +329,7 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     c.font = BOLD
     r += 1
     hdr = ["Name", "D10", "D5", "Stat", "FTE (derived)", "Job share",
-           "Seniority", "Preferences", "Unavailable dates"]
+           "Preferences", "Unavailable dates"]
     for j, h in enumerate(hdr, start=1):
         cc = ws.cell(r, j, value=h)
         _style_cell(cc, FILL_HEADER, WHITE_BOLD)
@@ -352,9 +352,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
         ws.cell(r, 4, value=nurse.stat_days)
         ws.cell(r, 5, value=nurse.target_fte)
         ws.cell(r, 6, value=nurse.job_share_group or "-")
-        ws.cell(r, 7, value=nurse.seniority_rank)
-        ws.cell(r, 8, value=", ".join(prefs) if prefs else "-")
-        ws.cell(r, 9, value=", ".join(nurse.unavailable_dates))
+        ws.cell(r, 7, value=", ".join(prefs) if prefs else "-")
+        ws.cell(r, 8, value=", ".join(nurse.unavailable_dates))
         r += 1
 
 

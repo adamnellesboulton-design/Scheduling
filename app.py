@@ -126,9 +126,10 @@ def roster_editor():
         "**5-hour Saturday shifts (D5, 1–10)** and **stat shifts (0–10)** over the "
         "rotation. The counts are the primary target; stat shifts are paid "
         "statutory-holiday days (BCNU Art. 17) that reduce worked D10 shifts. "
-        "**FTE** is derived (read-only). Preferences are soft and resolved by "
-        "**seniority**. Same **Job share** label = two lines never work the same "
-        "day. **Everyone works Saturdays** (≥1 per month)."
+        "**FTE** is derived (read-only). Preferences are honoured in the "
+        "preference-maximizing option. Same **Job share** label = two lines never "
+        "work the same day. **Everyone works Saturdays** (≥1 per month). "
+        "Seniority is not used — lines are picked by seniority afterward."
     )
 
     d10p, satp = cfg.d10_paid(), cfg.sat_paid()
@@ -144,7 +145,6 @@ def roster_editor():
             "stat": int(n.stat_days),
             "fte": round(hrs / denom, 3) if denom else 0.0,
             "job_share": n.job_share_group,
-            "seniority_rank": n.seniority_rank,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
             "pref_off_mon": n.pref_off_mon,
@@ -182,10 +182,6 @@ def roster_editor():
                 "Job share", options=["", "A", "B", "C", "D"],
                 help="Put the SAME label on two lines to job-share them — "
                      "they will never be scheduled on the same day.",
-            ),
-            "seniority_rank": st.column_config.NumberColumn(
-                "Seniority", min_value=1, step=1,
-                help="1 = most senior; resolves preference conflicts (25.03 ethos)",
             ),
             "pref_nonconsec_sat": st.column_config.CheckboxColumn(
                 "Non-consec Sat", help="Prefer to avoid back-to-back Saturdays"
@@ -229,7 +225,6 @@ def roster_editor():
             target_d10=_int(r.get("d10")),
             target_d5=max(1, _int(r.get("d5"), 1)),  # everyone works Saturdays
             stat_days=_int(r.get("stat")),
-            seniority_rank=int(r["seniority_rank"]) if pd.notna(r["seniority_rank"]) else 1,
             unavailable_dates=dates,
             job_share_group=str(r.get("job_share") or "").strip(),
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
@@ -316,8 +311,9 @@ def generate_section():
         )
 
     st.caption(
-        "Nothing is scheduled until you press **GO** — three best-fit options "
-        "(A / B / C) are produced from the parameters and roster above."
+        "Nothing is scheduled until you press **GO** — three options "
+        "(**preference-**, **equity-** and **cluster-maximizing**) are produced "
+        "from the parameters and roster above."
     )
     if st.button("🟢 GO — generate 3 options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
@@ -526,9 +522,11 @@ def main():
             "- In the **roster**, give each nurse their **D10**, **D5** and "
             "**stat-shift** counts. The generator hits those counts while keeping "
             "the schedule compliant.\n"
-            "- Press **GO** for **three best-fit options**. Open a tab, review the "
-            "status banner, optionally **edit** the grid by hand, then "
-            "**download** the Excel.\n"
+            "- Press **GO** for **three options** — preference-, equity- and "
+            "cluster-maximizing. Open a tab, review the status banner, optionally "
+            "**edit** the grid by hand, then **download** the Excel.\n"
+            "- Seniority isn't used to build the schedule — lines are picked by "
+            "seniority afterward.\n"
             "- The Excel prints clean in black-and-white; colour flags only "
             "problems."
         )

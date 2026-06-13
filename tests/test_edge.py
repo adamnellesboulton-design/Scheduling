@@ -29,8 +29,8 @@ def test_empty_roster():
 def test_duplicate_names_rejected():
     cfg = default_config(_friday())
     cfg.nurses = [
-        Nurse("Sam", target_d10=20, target_d5=5, seniority_rank=1),
-        Nurse("Sam", target_d10=20, target_d5=5, seniority_rank=2),
+        Nurse("Sam", target_d10=20, target_d5=5),
+        Nurse("Sam", target_d10=20, target_d5=5),
     ]
     r = generate_schedule(cfg)
     assert not r.feasible and r.status == "CONFIG_INVALID"
@@ -39,7 +39,7 @@ def test_duplicate_names_rejected():
 
 def test_blank_name_rejected():
     cfg = default_config(_friday())
-    cfg.nurses.append(Nurse("  ", target_d10=10, target_d5=2, seniority_rank=6))
+    cfg.nurses.append(Nurse("  ", target_d10=10, target_d5=2))
     r = generate_schedule(cfg)
     assert not r.feasible and r.status == "CONFIG_INVALID"
 
@@ -55,7 +55,7 @@ def test_demand_exceeds_staff():
 def test_saturday_per_month_infeasible_for_big_pool():
     cfg = default_config(_friday())
     cfg.nurses = [
-        Nurse(f"N{i}", target_d10=10, target_d5=2, seniority_rank=i + 1)
+        Nurse(f"N{i}", target_d10=10, target_d5=2)
         for i in range(20)
     ]
     r = generate_schedule(cfg)
@@ -80,16 +80,17 @@ def test_stat_days_exceed_target_clamped():
     validate(cfg, r)  # must not raise
 
 
-def test_three_options_distinct_and_deterministic():
+def test_three_profile_options_and_deterministic():
     cfg = default_config(_friday())
     a = generate_schedules(cfg)
     b = generate_schedules(cfg)
     assert 1 <= len(a) <= 3
     # reproducible
     assert all(x.assignments == y.assignments for x, y in zip(a, b))
-    # distinct
-    if len(a) >= 2:
-        assert a[0].assignments != a[1].assignments
+    # labelled by objective profile
+    labels = [r.label for r in a]
+    assert labels == ["Preference-maximizing", "Equity-maximizing",
+                      "Cluster-maximizing"][:len(a)]
 
 
 def test_job_share_never_same_day():

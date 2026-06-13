@@ -72,7 +72,6 @@ class Nurse:
     target_d5: int = 0  # desired # of 5-hour Saturday shifts (0-10)
     stat_days: int = 0  # paid statutory-holiday days (Art. 17): reduce worked D10
     fixed_saturdays_off: bool = False  # 25.06(B)/(E) waiver
-    seniority_rank: int = 1  # 1 = most senior; conflict resolution (25.03 ethos)
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
     # Per-line FTE flex (± tolerance). None -> use the config-wide default.
     fte_tolerance: Optional[float] = None
@@ -231,11 +230,11 @@ def default_nurses() -> list[Nurse]:
     schedule needs no extra coverage. (FTE is derived from the counts.)
     """
     return [
-        Nurse("Kathleen", target_d10=24, target_d5=6, seniority_rank=1),
-        Nurse("Adam", target_d10=24, target_d5=5, seniority_rank=2),
-        Nurse("Joane", target_d10=21, target_d5=5, seniority_rank=3),
-        Nurse("Leslie", target_d10=21, target_d5=4, seniority_rank=4),
-        Nurse("Kaitlyn", target_d10=18, target_d5=4, seniority_rank=5),
+        Nurse("Kathleen", target_d10=24, target_d5=6),
+        Nurse("Adam", target_d10=24, target_d5=5),
+        Nurse("Joane", target_d10=21, target_d5=5),
+        Nurse("Leslie", target_d10=21, target_d5=4),
+        Nurse("Kaitlyn", target_d10=18, target_d5=4),
     ]
 
 

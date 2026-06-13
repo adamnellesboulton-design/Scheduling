@@ -27,23 +27,48 @@ from .model import (
     nurse_eligible_for,
 )
 
-# Soft-objective weights, descending priority.
+# Soft-objective weights.
 #
 # Hitting each line's requested SHIFT COUNTS (D10 weekday + D5 Saturday) is the
-# primary objective and is prioritized over the FTE flex. Saturday counts carry
-# the most weight. Below the counts: minimize weekday over-staffing (extras are
-# tolerated off Saturday but avoided where possible), keep low-FTE lines working
-# regularly, honour per-line preferences (by seniority), then consistency and
-# weekday equity. FTE deviation is a minor secondary smoother.
+# primary objective in every option; Saturday counts carry the most weight.
+# Always-on below the counts: minimize weekday over-staffing, keep low-FTE lines
+# working regularly, and a minor FTE smoother. Seniority plays NO part in
+# generation -- lines are picked by seniority afterward.
 W_SHIFT_D5 = 9000  # penalty per Saturday shift off the requested D5 count
 W_SHIFT_D10 = 5000  # penalty per weekday shift off the requested D10 count
 W_THREE_OF_FOUR = 1500  # low-FTE lines: push to work >=3 of every 4 weeks
 W_EXTRA = 600  # penalty per extra (over-demand) nurse on a weekday
-W_PREF = 450  # per honoured line-preference unit, scaled (0,1] by seniority
-W_PATTERN = 400  # penalty per week-over-week weekday change (consistency)
-W_WEEKDAY_EQUITY = 40  # penalty per weekday-count spread within an FTE class
 W_FTE_DEV = 2  # minor penalty per half-hour of derived-FTE deviation
-W_SENIORITY_TIE = 1  # tie-break: senior nurses get first pick of off-Saturdays
+
+# Three options, each maximizing a different secondary goal. The dict gives the
+# weight of each differentiating term per profile.
+OBJECTIVE_PROFILES = {
+    "preference": {
+        "label": "Preference-maximizing",
+        "pref": 900,        # satisfy ticked line preferences
+        "wd_equity": 30,
+        "sat_spread": 30,
+        "cluster_all": 0,
+        "pattern": 250,
+    },
+    "equity": {
+        "label": "Equity-maximizing",
+        "pref": 60,
+        "wd_equity": 500,   # balance weekday types across nurses
+        "sat_spread": 350,  # space each nurse's Saturdays evenly
+        "cluster_all": 0,
+        "pattern": 250,
+    },
+    "cluster": {
+        "label": "Cluster-maximizing",
+        "pref": 60,
+        "wd_equity": 30,
+        "sat_spread": 30,
+        "cluster_all": 600,  # group everyone's shifts -> long days off
+        "pattern": 150,
+    },
+}
+PROFILE_ORDER = ["preference", "equity", "cluster"]
 
 # Lines below this FTE should work in >=3 of every rolling 4 weeks (soft).
 LOW_FTE_THRESHOLD = 0.30
@@ -59,11 +84,7 @@ SAT_PER_MONTH_WINDOW = 4
 DET_TIME_LIMIT = 12.0  # deterministic time units (solution plateaus well before this)
 SOLVER_TIME_LIMIT_S = 90.0  # wall-clock safety cap
 RANDOM_SEED = 42
-
-# "Three best fits": number of alternatives and how different they must be.
-N_ALTERNATIVES = 3
-DIVERSITY_MIN_DIFF = 12  # min differing assignments between alternatives
-ALT_DET_TIME = 6.0  # smaller per-solve budget when generating several
+ALT_DET_TIME = 8.0  # per-option solve budget (three options per run)
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
 SAT_MAX_PER_9WK = 6
@@ -255,9 +276,10 @@ def _sat_cap_for_span(weeks: int, span_weeks: int) -> int:
 def _solve_cpsat(
     cfg: Config,
     operating: list[OperatingDate],
-    previous: list[dict] | None = None,
+    profile: str = "preference",
     det_time: float = DET_TIME_LIMIT,
 ) -> ScheduleResult:
+    prof = OBJECTIVE_PROFILES[profile]
     model = cp_model.CpModel()
     nurses = cfg.nurses
     weeks = cfg.weeks
@@ -390,13 +412,8 @@ def _solve_cpsat(
         model.Add(d5_dev >= nurse.target_d5 - d5_actual)
         obj_terms.append(W_SHIFT_D5 * d5_dev)
 
-        # Seniority tie-break: senior (low rank) nurses get first pick of
-        # off-Saturdays -> tiny extra penalty for them working a Saturday.
-        max_rank = max((nn.seniority_rank for nn in nurses), default=1)
-        senior_weight = max_rank - nurse.seniority_rank + 1
-        obj_terms.append(W_SENIORITY_TIE * senior_weight * d5_actual)
-
     # 2. Weekday equity within FTE class (balance each weekday across equals).
+    #    Weight depends on the option profile (high for "equity-maximizing").
     weekday_codes = [s.weekday for s in cfg.operating_shifts if s.weekday != 5]
     groups: dict[float, list[int]] = {}
     for ni, nurse in enumerate(nurses):
@@ -421,7 +438,8 @@ def _solve_cpsat(
             model.AddMinEquality(gmin, counts)
             spread = model.NewIntVar(0, weeks, f"wdspread_{fte_val}_{wd}")
             model.Add(spread == gmax - gmin)
-            obj_terms.append(W_WEEKDAY_EQUITY * spread)
+            if prof["wd_equity"]:
+                obj_terms.append(prof["wd_equity"] * spread)
 
     # 3. Consistency: penalize week-over-week changes in the WEEKDAY line, so
     #    each nurse tends to work the same weekdays every week (a stable,
@@ -451,7 +469,8 @@ def _solve_cpsat(
                 diff = model.NewBoolVar(f"pat_{ni}_{wd}_{wk}")
                 model.Add(diff >= a_expr - b_expr)
                 model.Add(diff >= b_expr - a_expr)
-                obj_terms.append(W_PATTERN * diff)
+                if prof["pattern"]:
+                    obj_terms.append(prof["pattern"] * diff)
 
     # 4. Derived-FTE deviation (minor smoother): keep worked hours near the hours
     #    implied by the requested shift counts.
@@ -466,66 +485,75 @@ def _solve_cpsat(
         model.Add(dev >= target_hh - nurse_hours_expr[ni])
         obj_terms.append(W_FTE_DEV * dev)
 
-    # 5. Line preferences (soft; conflicts resolved by seniority). Each honoured
-    #    preference is weighted W_PREF x a seniority factor in (0, 1] -- most
-    #    senior (rank 1) carries full weight, so when two lines' wishes clash the
-    #    senior nurse's preference prevails. Sits above equity but below the hard
-    #    rules and the low-FTE 3-of-4 push.
+    # 5. Line preferences (soft). Flat weight per honoured preference (no
+    #    seniority). Strong in the "preference-maximizing" option, light in the
+    #    others. Non-consecutive Saturdays and clustering also have GLOBAL forms
+    #    (sat_spread / cluster_all) that apply to everyone in the equity and
+    #    cluster options.
     operating_weekdays = sorted({s.weekday for s in cfg.operating_shifts})
-    max_rank = max((nn.seniority_rank for nn in nurses), default=1)
     start = cfg.start
     n_days = 7 * weeks
     iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
-    for ni, nurse in enumerate(nurses):
-        senior_factor = (max_rank - nurse.seniority_rank + 1) / max_rank
-        pw = max(1, round(W_PREF * senior_factor))  # integer objective coeff
+    pw = prof["pref"]
 
-        # a) Off-day preferences: penalize working that weekday.
-        for flag, wd in (
-            (nurse.pref_off_mon, 0),
-            (nurse.pref_off_wed, 2),
-            (nurse.pref_off_fri, 4),
-        ):
-            if not flag:
+    def _off_off_pairs(ni: int):
+        """Yield BoolVars that are 1 when this nurse is off on adjacent days."""
+        on_expr = []
+        for day_idx in range(n_days):
+            d = start + timedelta(days=day_idx)
+            oi = iso_to_oi.get(d.isoformat())
+            on_expr.append(x[(ni, oi)] if (oi is not None and (ni, oi) in x) else 0)
+        for k in range(n_days - 1):
+            a, b = on_expr[k], on_expr[k + 1]
+            if isinstance(a, int) and isinstance(b, int):
                 continue
-            for wk in range(weeks):
-                v = slot_var(ni, wk, wd)
-                if v is not None:
-                    obj_terms.append(pw * v)
+            off_pair = model.NewBoolVar(f"offpair_{ni}_{k}")
+            model.Add(off_pair <= 1 - a)
+            model.Add(off_pair <= 1 - b)
+            yield off_pair
 
-        # b) Non-consecutive Saturdays preferred: penalize back-to-back Sats.
-        if nurse.pref_nonconsec_sat:
-            for wk in range(weeks - 1):
-                a = slot_var(ni, wk, 5)
-                b = slot_var(ni, wk + 1, 5)
-                if a is None or b is None:
+    def _consec_sat(ni: int):
+        """Yield BoolVars that are 1 when this nurse works back-to-back Saturdays."""
+        for wk in range(weeks - 1):
+            a = slot_var(ni, wk, 5)
+            b = slot_var(ni, wk + 1, 5)
+            if a is None or b is None:
+                continue
+            both = model.NewBoolVar(f"consecsat_{ni}_{wk}")
+            model.Add(both >= a + b - 1)
+            yield both
+
+    for ni, nurse in enumerate(nurses):
+        if pw:
+            # a) Off-day preferences: penalize working that weekday.
+            for flag, wd in (
+                (nurse.pref_off_mon, 0),
+                (nurse.pref_off_wed, 2),
+                (nurse.pref_off_fri, 4),
+            ):
+                if not flag:
                     continue
-                both = model.NewBoolVar(f"consecsat_{ni}_{wk}")
-                model.Add(both >= a + b - 1)
-                obj_terms.append(pw * both)
+                for wk in range(weeks):
+                    v = slot_var(ni, wk, wd)
+                    if v is not None:
+                        obj_terms.append(pw * v)
+            # b) Non-consecutive Saturdays preferred.
+            if nurse.pref_nonconsec_sat:
+                for both in _consec_sat(ni):
+                    obj_terms.append(pw * both)
+            # c) Clustered shifts preferred (reward off/off adjacency).
+            if nurse.pref_clustered:
+                for off_pair in _off_off_pairs(ni):
+                    obj_terms.append(-pw * off_pair)
 
-        # c) Clustered shifts preferred: reward every adjacent pair of calendar
-        #    days on which this nurse is off. With total off-days pinned by the
-        #    FTE band, maximizing off/off adjacencies clusters the worked days
-        #    (e.g. Fri+Sat together) and lengthens contiguous days off. Closure
-        #    days (Tue/Thu/Sun) are always-off constants.
-        if nurse.pref_clustered:
-            on_expr = []
-            for day_idx in range(n_days):
-                d = start + timedelta(days=day_idx)
-                oi = iso_to_oi.get(d.isoformat())
-                if oi is not None and (ni, oi) in x:
-                    on_expr.append(x[(ni, oi)])
-                else:
-                    on_expr.append(0)
-            for k in range(n_days - 1):
-                a, b = on_expr[k], on_expr[k + 1]
-                if isinstance(a, int) and isinstance(b, int):
-                    continue  # constant off/off pair -> no decision to make
-                off_pair = model.NewBoolVar(f"clusteroff_{ni}_{k}")
-                model.Add(off_pair <= 1 - a)
-                model.Add(off_pair <= 1 - b)
-                obj_terms.append(-pw * off_pair)  # reward (minimization)
+        # GLOBAL equity: space everyone's Saturdays out (penalize back-to-back).
+        if prof["sat_spread"]:
+            for both in _consec_sat(ni):
+                obj_terms.append(prof["sat_spread"] * both)
+        # GLOBAL cluster: reward everyone's off/off adjacency -> long days off.
+        if prof["cluster_all"]:
+            for off_pair in _off_off_pairs(ni):
+                obj_terms.append(-prof["cluster_all"] * off_pair)
 
     # 6. Low-FTE lines (< 0.30): strong push to work in >= 3 of every rolling
     #    4-week window, so a small line stays regularly engaged instead of
@@ -552,17 +580,6 @@ def _solve_cpsat(
             model.Add(short >= THREE_OF_FOUR_MIN_ACTIVE - window_active)
             obj_terms.append(W_THREE_OF_FOUR * short)
 
-    # Diversity: force each alternative to differ from earlier ones by at least
-    # DIVERSITY_MIN_DIFF variable assignments (Hamming distance), so the three
-    # "best fits" are genuinely different lines, not cosmetic shuffles.
-    for prev in (previous or []):
-        dist_terms = []
-        for key, var in x.items():
-            pv = prev.get(key, 0)
-            dist_terms.append((1 - var) if pv == 1 else var)
-        if dist_terms:
-            model.Add(sum(dist_terms) >= min(DIVERSITY_MIN_DIFF, len(dist_terms)))
-
     model.Minimize(sum(obj_terms))
 
     solver = cp_model.CpSolver()
@@ -579,14 +596,13 @@ def _solve_cpsat(
     status_name = solver.StatusName(status)
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         assignments = _extract_assignments(cfg, operating, x, solver)
-        xvals = {key: int(solver.Value(var)) for key, var in x.items()}
         return ScheduleResult(
             feasible=True,
             method="cp-sat",
             status=status_name,
             assignments=assignments,
             operating=operating,
-            xvals=xvals,
+            label=prof["label"],
         )
     return ScheduleResult(
         feasible=False,
@@ -715,12 +731,9 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
             and od.iso not in assignments[n.name]
             and (not od.is_saturday or sat_ok(n, od))
         ]
-        # Prefer nurses most below target (deficit), tie-break by seniority.
+        # Prefer nurses most below their target hours; name for a stable order.
         candidates.sort(
-            key=lambda n: (
-                -(target_hours[n.name] - accrued[n.name]),
-                n.seniority_rank,
-            )
+            key=lambda n: (-(target_hours[n.name] - accrued[n.name]), n.name)
         )
         # Pick up to demand, never putting two job-share partners on one day (H8).
         chosen = []
@@ -768,14 +781,16 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 # --- Public entry point ----------------------------------------------------
 
 
-def generate_schedules(cfg: Config, n: int = N_ALTERNATIVES) -> list[ScheduleResult]:
-    """Generate up to `n` distinct near-optimal schedules ("best fits").
+def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
+    """Generate one schedule per objective profile.
 
-    The first is the optimum; each subsequent one is forced to differ from all
-    earlier ones (Hamming distance >= DIVERSITY_MIN_DIFF). Returns a single
-    infeasible/greedy result in a one-item list if no CP-SAT solution exists.
+    By default three options -- preference-, equity- and cluster-maximizing.
+    Each satisfies all hard constraints and hits the requested shift counts; the
+    profiles differ in which secondary goal they push. Returns a single
+    infeasible / greedy result in a one-item list if no CP-SAT solution exists.
     """
     cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
+    profiles = profiles or PROFILE_ORDER
 
     integrity = config_integrity_check(cfg)
     if not integrity.ok:
@@ -804,26 +819,23 @@ def generate_schedules(cfg: Config, n: int = N_ALTERNATIVES) -> list[ScheduleRes
             binding_constraints=diag,
         )]
 
+    det = DET_TIME_LIMIT if len(profiles) <= 1 else ALT_DET_TIME
     results: list[ScheduleResult] = []
-    previous: list[dict] = []
-    det = DET_TIME_LIMIT if n <= 1 else ALT_DET_TIME
-    for i in range(max(1, n)):
-        res = _solve_cpsat(cfg, operating, previous=previous, det_time=det)
+    for i, profile in enumerate(profiles):
+        res = _solve_cpsat(cfg, operating, profile=profile, det_time=det)
         if not res.feasible:
             if i == 0:
                 diag = _diagnose(cfg, operating)
                 greedy = _greedy(cfg, operating)
                 greedy.binding_constraints = diag + greedy.binding_constraints
                 greedy.messages = diag + greedy.messages
-                greedy.label = "Option A"
+                greedy.label = "Best effort"
                 return [greedy]
-            break  # fewer than n distinct alternatives exist
-        res.label = f"Option {chr(ord('A') + i)}"
+            continue  # this profile couldn't solve in budget; keep the others
         results.append(res)
-        previous.append(res.xvals)
     return results
 
 
 def generate_schedule(cfg: Config) -> ScheduleResult:
-    """Single best schedule (back-compat wrapper)."""
-    return generate_schedules(cfg, n=1)[0]
+    """Single best schedule (back-compat wrapper) -- the preference profile."""
+    return generate_schedules(cfg, profiles=["preference"])[0]
