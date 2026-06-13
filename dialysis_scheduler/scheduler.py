@@ -107,8 +107,7 @@ class ScheduleResult:
     binding_constraints: list = field(default_factory=list)
     tolerance_used: float = 0.0
     drifted_nurses: list = field(default_factory=list)
-    label: str = ""  # "Option A/B/C" when several alternatives are produced
-    xvals: dict = field(default_factory=dict)  # (ni, oi) -> 0/1, for diversity
+    label: str = ""  # the objective-profile name when several options are produced
 
 
 # --- Feasibility pre-checks (Section 7.3) ---------------------------------
@@ -173,8 +172,7 @@ def saturday_feasibility_check(
             f"required Saturday-shifts over the period = {total_sat_demand}, but "
             f"the roster can supply at most {capacity:.1f} "
             "(sum of eligible Saturdays x 6/9). "
-            "Reduce Saturday demand, add Saturday-eligible nurses, or remove "
-            "fixed_saturdays_off waivers."
+            "Reduce Saturday demand or add Saturday-eligible nurses."
         )
     return PreCheck(ok, msgs)
 
@@ -223,7 +221,7 @@ def sat_per_month_feasibility_check(
     Infeasible if a window has fewer Saturday seats than non-waived nurses.
     """
     weeks = cfg.weeks
-    n_required = sum(1 for n in cfg.nurses if not n.fixed_saturdays_off)
+    n_required = len(cfg.nurses)  # everyone works Saturdays
     sat_seats_by_week: dict[int, int] = {}
     for od in operating:
         if od.is_saturday:
@@ -354,8 +352,6 @@ def _solve_cpsat(
     else:
         sat_windows_4 = [(0, weeks - 1)]
     for ni, nurse in enumerate(nurses):
-        if nurse.fixed_saturdays_off:
-            continue
         for (ws, we) in sat_windows_4:
             window_vars = [
                 x[(ni, oi)]
@@ -440,6 +436,27 @@ def _solve_cpsat(
             model.Add(spread == gmax - gmin)
             if prof["wd_equity"]:
                 obj_terms.append(prof["wd_equity"] * spread)
+
+    # 2b. Per-nurse weekday-type balance: each nurse's Mon/Wed/Fri counts should
+    #     be close, so nobody is stuck working only one weekday. Works for any
+    #     roster (unlike the within-class term above, which needs equal FTEs).
+    if prof["wd_equity"] and len(weekday_codes) > 1:
+        for ni in range(len(nurses)):
+            per_wd = []
+            for wd in weekday_codes:
+                cv = model.NewIntVar(0, weeks, f"nwd_{ni}_{wd}")
+                model.Add(cv == sum(
+                    x[(ni, oi)] for oi, od in enumerate(operating)
+                    if od.weekday == wd and (ni, oi) in x
+                ))
+                per_wd.append(cv)
+            hi = model.NewIntVar(0, weeks, f"nwdhi_{ni}")
+            lo = model.NewIntVar(0, weeks, f"nwdlo_{ni}")
+            model.AddMaxEquality(hi, per_wd)
+            model.AddMinEquality(lo, per_wd)
+            sp = model.NewIntVar(0, weeks, f"nwdsp_{ni}")
+            model.Add(sp == hi - lo)
+            obj_terms.append(prof["wd_equity"] * sp)
 
     # 3. Consistency: penalize week-over-week changes in the WEEKDAY line, so
     #    each nurse tends to work the same weekdays every week (a stable,

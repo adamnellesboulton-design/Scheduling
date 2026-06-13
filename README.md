@@ -138,7 +138,7 @@ The three options differ only in which **secondary goal** they push:
 | Option | Maximizes |
 |--------|-----------|
 | **Preference-maximizing** | Satisfies the ticked line preferences (off Mon/Wed/Fri, non-consecutive Saturdays, clustered shifts). |
-| **Equity-maximizing** | Balances weekday types across nurses and spaces each nurse's Saturdays evenly. |
+| **Equity-maximizing** | Gives each nurse a fair mix of weekday types (no one stuck with all Mondays) and spaces their Saturdays evenly. |
 | **Cluster-maximizing** | Groups everyone's shifts so off-stretches are long and contiguous (most consecutive days off). |
 
 Each is solved independently and **deterministically**, so the same inputs

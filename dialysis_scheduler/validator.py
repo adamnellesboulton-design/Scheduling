@@ -224,8 +224,6 @@ def validate(cfg: Config, result) -> ValidationReport:
     h9_ok = True
     h9_bad = []
     for nurse in cfg.nurses:
-        if nurse.fixed_saturdays_off:
-            continue
         worked = _nurse_worked_dates(assignments, nurse.name)
         for (ws, we) in windows4:
             got = sum(
@@ -298,9 +296,7 @@ def validate(cfg: Config, result) -> ValidationReport:
             1 for i in worked if i in od_by_iso and not od_by_iso[i].is_saturday
         )
         elig_sat = sum(
-            1
-            for od in sats
-            if od.iso not in nurse.unavailable_dates and not nurse.fixed_saturdays_off
+            1 for od in sats if od.iso not in nurse.unavailable_dates
         )
         worst, _cap = _worst_rolling_9wk_sat(cfg, operating, nurse.name, assignments)
         report.nurse_summaries.append(
@@ -312,7 +308,7 @@ def validate(cfg: Config, result) -> ValidationReport:
                 total_hours=round(total_hours, 1),
                 avg_weekly_hours=round(total_hours / cfg.weeks, 2),
                 saturdays_worked=n_sat_worked,
-                saturdays_in_period=elig_sat if not nurse.fixed_saturdays_off else 0,
+                saturdays_in_period=elig_sat,
                 worst_9wk_sat=worst,
                 within_tolerance=within,
                 target_d10=nurse.worked_d10(),

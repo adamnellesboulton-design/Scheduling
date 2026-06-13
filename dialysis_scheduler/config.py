@@ -71,14 +71,13 @@ class Nurse:
     target_d10: int = 0  # desired # of 10-hour weekday shifts (0-40)
     target_d5: int = 0  # desired # of 5-hour Saturday shifts (0-10)
     stat_days: int = 0  # paid statutory-holiday days (Art. 17): reduce worked D10
-    fixed_saturdays_off: bool = False  # 25.06(B)/(E) waiver
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
     # Per-line FTE flex (± tolerance). None -> use the config-wide default.
     fte_tolerance: Optional[float] = None
     # Job-share label: lines sharing the same non-empty label never work the
     # same day (two people splitting one line). Empty = no job share.
     job_share_group: str = ""
-    # Line preferences (soft, resolved by seniority).
+    # Line preferences (soft).
     pref_nonconsec_sat: bool = False  # avoid back-to-back Saturdays
     pref_clustered: bool = False  # prefer worked days grouped (e.g. Fri+Sat)
     pref_off_mon: bool = False  # prefer Mondays off
@@ -223,7 +222,7 @@ def default_operating_shifts() -> list[ShiftDef]:
 
 
 def default_nurses() -> list[Nurse]:
-    """The unit roster, in seniority order, pre-populated for the app.
+    """The unit roster, pre-populated for the app (display order only).
 
     Shift-count targets are sized to match the default demand over 12 weeks
     (Mon/Wed/Fri = 3 -> 108 D10 shifts; Sat = 2 -> 24 D5 shifts) so the default
