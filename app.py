@@ -358,20 +358,32 @@ def generate_section():
 def _render_option(cfg: Config, opt, idx: int):
     """Render one option: editable grid -> live re-validation -> download."""
     operating = opt.operating or build_operating_dates(cfg)
+
+    # The grid IS the schedule and is editable. Edits re-validate live below.
+    edit_on = st.toggle(
+        "✏️ Edit this schedule", value=False, key=f"edit_{idx}",
+        help="Turn on to change cells. Pick a cell value: the day's shift code "
+             "to staff it, LV for leave, or blank for off. Everything below "
+             "updates as you edit.",
+    )
     st.caption(
-        "Edit the grid to move shifts around — pick a cell's value (the day's "
-        "shift code, LV, or blank). Compliance and the download update live."
+        "Columns are operating days (Fri / Sat / Mon / Wed each week). Rows are "
+        "nurses (the name column stays pinned). "
+        + ("**Editing on** — change any cell." if edit_on
+           else "Toggle **Edit** above to adjust by hand.")
     )
 
     base_df = _grid_df(cfg, opt.assignments, operating)
-    col_cfg = {}
+    col_cfg = {"Nurse": st.column_config.TextColumn(
+        "Nurse", disabled=True, pinned=True, width="small")}
     for od in operating:
         lbl = _label(od)
         col_cfg[lbl] = st.column_config.SelectboxColumn(
-            lbl, options=["", od.shift.code, "LV"], width="small",
+            lbl, options=["", od.shift.code, "LV"], width="small", required=False,
         )
     edited = st.data_editor(
-        base_df, width="stretch", column_config=col_cfg, key=f"grid_{idx}",
+        base_df, width="stretch", column_config=col_cfg, hide_index=True,
+        num_rows="fixed", disabled=not edit_on, key=f"grid_{idx}",
     )
 
     # Reconstruct assignments from the (possibly edited) grid and re-validate.
@@ -379,32 +391,43 @@ def _render_option(cfg: Config, opt, idx: int):
     result = replace(opt, assignments=assignments)
     report = validate(cfg, result)
 
-    # Compliance badges (issues first).
-    st.markdown("**Compliance**")
-    issues = [r for r in report.rules if r.status in ("FAIL", "WARN")]
-    if not issues:
-        st.success("All checks pass.")
-    bcols = st.columns(2)
-    for j, rule in enumerate(report.rules):
-        with bcols[j % 2]:
+    # Prominent status banner (matters most when presenting / after edits).
+    fails = [r for r in report.rules if r.status == "FAIL"]
+    warns = [r for r in report.rules if r.status == "WARN"]
+    if fails:
+        st.error(
+            f"❌ {len(fails)} issue(s) must be fixed: "
+            + "; ".join(r.rule for r in fails)
+        )
+    elif warns:
+        st.warning(
+            f"⚠️ {len(warns)} thing(s) to review: " + "; ".join(r.rule for r in warns)
+        )
+    else:
+        st.success("✅ All checks pass — this schedule is compliant.")
+
+    # Per-nurse summary.
+    st.markdown("**Per-nurse summary**")
+    sdf = pd.DataFrame([{
+        "Nurse": s.name,
+        "D10 (sched/target)": f"{s.scheduled_d10}/{s.target_d10}",
+        "D5 (sched/target)": f"{s.scheduled_d5}/{s.target_d5}",
+        "Counts met": "✓" if (s.scheduled_d10 == s.target_d10
+                              and s.scheduled_d5 == s.target_d5) else "✗",
+        "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
+        "Saturdays": f"{s.saturdays_worked}/{s.saturdays_in_period}",
+        "Worst 9-wk Sat": s.worst_9wk_sat,
+    } for s in report.nurse_summaries])
+    st.dataframe(sdf, hide_index=True, width="stretch")
+
+    # Full compliance detail (collapsed by default to keep the view clean).
+    with st.expander("Full compliance report"):
+        for rule in report.rules:
             st.markdown(
                 f"{STATUS_EMOJI.get(rule.status, '')} **{rule.status}** — "
                 f"{rule.rule}  \n<small>{rule.citation}: {rule.detail}</small>",
                 unsafe_allow_html=True,
             )
-
-    # Per-nurse summary.
-    sdf = pd.DataFrame([{
-        "Nurse": s.name,
-        "D10": f"{s.scheduled_d10}/{s.target_d10}",
-        "D5": f"{s.scheduled_d5}/{s.target_d5}",
-        "Counts met": "yes" if (s.scheduled_d10 == s.target_d10
-                                and s.scheduled_d5 == s.target_d5) else "NO",
-        "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
-        "Sats": f"{s.saturdays_worked}/{s.saturdays_in_period}",
-        "Worst 9-wk Sat": s.worst_9wk_sat,
-    } for s in report.nurse_summaries])
-    st.dataframe(sdf, hide_index=True, width="stretch")
 
     # Download (reflects manual edits). Rebuild the workbook only when this
     # option's assignments actually change, so the three tabs don't each rebuild
@@ -435,35 +458,36 @@ def _label(od) -> str:
 
 
 def _grid_df(cfg: Config, assignments: dict, operating) -> pd.DataFrame:
+    """One row per nurse; a 'Nurse' name column then one column per operating day."""
     unavail = {n.name: set(n.unavailable_dates) for n in cfg.nurses}
-    index = [n.name for n in cfg.nurses]
-    data = {}
-    for od in operating:
-        lbl = _label(od)
-        col = []
-        for n in cfg.nurses:
+    rows = []
+    for n in cfg.nurses:
+        row = {"Nurse": n.name}
+        for od in operating:
             code = assignments.get(n.name, {}).get(od.iso)
             if code:
-                col.append(code)
+                row[_label(od)] = code
             elif od.iso in unavail[n.name]:
-                col.append("LV")
+                row[_label(od)] = "LV"
             else:
-                col.append("")
-        data[lbl] = col
-    return pd.DataFrame(data, index=index)
+                row[_label(od)] = ""
+        rows.append(row)
+    cols = ["Nurse"] + [_label(od) for od in operating]
+    return pd.DataFrame(rows, columns=cols)
 
 
 def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
     lbl_to_od = {_label(od): od for od in operating}
+    valid_names = {n.name for n in cfg.nurses}
     assignments = {n.name: {} for n in cfg.nurses}
-    for lbl in df.columns:
-        od = lbl_to_od.get(lbl)
-        if od is None:
+    for _, row in df.iterrows():
+        name = str(row.get("Nurse") or "").strip()
+        if name not in valid_names:
             continue
-        for name in df.index:
-            v = str(df.at[name, lbl] or "").strip().upper()
+        for lbl, od in lbl_to_od.items():
+            v = str(row.get(lbl) or "").strip().upper()
             if v and v != "LV":  # any work code -> assign the day's shift
-                assignments.setdefault(name, {})[od.iso] = od.shift.code
+                assignments[name][od.iso] = od.shift.code
     return assignments
 
 
