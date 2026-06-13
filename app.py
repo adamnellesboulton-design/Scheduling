@@ -26,8 +26,6 @@ from dialysis_scheduler.excel_export import workbook_bytes, output_filename
 
 st.set_page_config(page_title="Dialysis Unit Scheduler", layout="wide")
 
-STATUS_EMOJI = {"PASS": "✅", "FAIL": "❌", "INFO": "ℹ️", "WARN": "⚠️"}
-
 
 # --- session state ---------------------------------------------------------
 
@@ -46,11 +44,11 @@ def _cfg() -> Config:
 
 def sidebar():
     cfg = _cfg()
-    st.sidebar.header("⚙️ Configuration")
+    st.sidebar.header("Configuration")
     st.sidebar.caption("Set the period and demand here; build the roster on the right.")
 
     # Load / save JSON config.
-    with st.sidebar.expander("💾 Load / save config (JSON)", expanded=False):
+    with st.sidebar.expander("Load / save config", expanded=False):
         path = st.text_input("Config file path", value=DEFAULT_CONFIG_PATH)
         c1, c2 = st.columns(2)
         if c1.button("Load", width="stretch"):
@@ -74,7 +72,7 @@ def sidebar():
                 st.error(f"Invalid config: {e}")
 
     # Schedule period.
-    st.sidebar.subheader("📅 Schedule period")
+    st.sidebar.subheader("Schedule period")
     start = st.sidebar.date_input("Start date (must be a Friday)", value=cfg.start)
     if start.weekday() != 4:
         st.sidebar.error("Start date must be a Friday — the rotation starts Friday.")
@@ -88,7 +86,7 @@ def sidebar():
     cfg.weeks = int(weeks)
 
     # Daily staffing demand.
-    st.sidebar.subheader("👥 Nurses needed per day")
+    st.sidebar.subheader("Nurses needed per day")
     st.sidebar.caption("Weekdays are a minimum (extras allowed); Saturday is exact.")
     cols = st.sidebar.columns(4)
     for i, day in enumerate(["Mon", "Wed", "Fri", "Sat"]):
@@ -105,7 +103,7 @@ def sidebar():
 
     # Statutory holidays in the rotation (BCNU Art. 17), for reference.
     stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
-    st.sidebar.subheader("🗓️ Statutory holidays")
+    st.sidebar.subheader("Statutory holidays")
     st.sidebar.caption(
         f"**{len(stats)}** fall in this rotation (BCNU Art. 17): "
         + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
@@ -119,7 +117,7 @@ def sidebar():
 
 def roster_editor():
     cfg = _cfg()
-    st.header("👩‍⚕️ Nurse roster")
+    st.header("Nurse roster")
 
     st.caption(
         "Set each line's number of **10-hour weekday shifts (D10, 0–40)**, "
@@ -240,7 +238,7 @@ def roster_editor():
     names = [n.name for n in cfg.nurses]
     dupes = sorted({nm for nm in names if names.count(nm) > 1})
     if dupes:
-        st.error(f"⛔ Duplicate nurse name(s): {', '.join(dupes)}. Names must be unique.")
+        st.error(f"Duplicate nurse name(s): {', '.join(dupes)}. Names must be unique.")
 
     # Sanity check: requested worked counts vs available seats in the rotation.
     op = build_operating_dates(cfg)
@@ -268,7 +266,7 @@ def roster_editor():
             f"seats — {worked_d10 - wd_seats} extra weekday shift(s) will be scheduled."
         )
     if notes:
-        st.info("ℹ️ " + "  \n".join(notes))
+        st.info("  \n".join(notes))
 
 
 def _parse_dates(raw: str) -> list[str]:
@@ -295,9 +293,8 @@ def generate_section():
     lead_days = (cfg.start - date.today()).days
     if lead_days < 42:
         st.warning(
-            f"**25.05 posting:** schedule starts in {lead_days} day(s) (< 6 weeks). "
-            "The master schedule must be posted 6 weeks in advance.",
-            icon="⚠️",
+            f"25.05 posting: schedule starts in {lead_days} day(s) (< 6 weeks). "
+            "The master schedule must be posted 6 weeks in advance."
         )
     with st.expander("Compliance reminders"):
         st.markdown(
@@ -315,7 +312,7 @@ def generate_section():
         "(**preference-**, **equity-** and **cluster-maximizing**) are produced "
         "from the parameters and roster above."
     )
-    if st.button("🟢 GO — generate 3 options", type="primary", width="stretch"):
+    if st.button("Generate three options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
             st.error("Start date must be a Friday. Fix it in the sidebar.")
             return
@@ -338,14 +335,14 @@ def generate_section():
 
     first = options[0]
     if not first.feasible and first.method == "none":
-        st.error("❌ **No feasible schedule** — nothing generated.", icon="❌")
+        st.error("**No feasible schedule** — nothing generated.")
         st.markdown("**Why, and how to fix it:**")
         for m in (first.binding_constraints or first.messages):
             st.markdown(f"- {m}")
         return
 
     if len(options) == 1 and options[0].method == "greedy":
-        st.warning("⚠️ No perfect schedule exists — a best-effort fallback is shown.")
+        st.warning("No perfect schedule exists — a best-effort fallback is shown.")
         for m in options[0].messages:
             st.markdown(f"- {m}")
 
@@ -375,7 +372,7 @@ def _render_option(cfg: Config, opt, idx: int):
 
     # The grid IS the schedule and is editable. Edits re-validate live below.
     edit_on = st.toggle(
-        "✏️ Edit this schedule", value=False, key=f"edit_{idx}",
+        "Edit this schedule", value=False, key=f"edit_{idx}",
         help="Turn on to change cells. Pick a cell value: the day's shift code "
              "to staff it, LV for leave, or blank for off. Everything below "
              "updates as you edit.",
@@ -410,15 +407,15 @@ def _render_option(cfg: Config, opt, idx: int):
     warns = [r for r in report.rules if r.status == "WARN"]
     if fails:
         st.error(
-            f"❌ {len(fails)} issue(s) must be fixed: "
+            f"{len(fails)} issue(s) must be fixed: "
             + "; ".join(r.rule for r in fails)
         )
     elif warns:
         st.warning(
-            f"⚠️ {len(warns)} thing(s) to review: " + "; ".join(r.rule for r in warns)
+            f"{len(warns)} thing(s) to review: " + "; ".join(r.rule for r in warns)
         )
     else:
-        st.success("✅ All checks pass — this schedule is compliant.")
+        st.success("All checks pass — this schedule is compliant.")
 
     # Per-nurse summary.
     st.markdown("**Per-nurse summary**")
@@ -426,8 +423,8 @@ def _render_option(cfg: Config, opt, idx: int):
         "Nurse": s.name,
         "D10 (sched/target)": f"{s.scheduled_d10}/{s.target_d10}",
         "D5 (sched/target)": f"{s.scheduled_d5}/{s.target_d5}",
-        "Counts met": "✓" if (s.scheduled_d10 == s.target_d10
-                              and s.scheduled_d5 == s.target_d5) else "✗",
+        "Counts met": "Yes" if (s.scheduled_d10 == s.target_d10
+                              and s.scheduled_d5 == s.target_d5) else "No",
         "FTE": s.scheduled_fte, "Total hrs": s.total_hours,
         "Saturdays": f"{s.saturdays_worked}/{s.saturdays_in_period}",
         "Worst 9-wk Sat": s.worst_9wk_sat,
@@ -436,12 +433,11 @@ def _render_option(cfg: Config, opt, idx: int):
 
     # Full compliance detail (collapsed by default to keep the view clean).
     with st.expander("Full compliance report"):
-        for rule in report.rules:
-            st.markdown(
-                f"{STATUS_EMOJI.get(rule.status, '')} **{rule.status}** — "
-                f"{rule.rule}  \n<small>{rule.citation}: {rule.detail}</small>",
-                unsafe_allow_html=True,
-            )
+        cdf = pd.DataFrame([{
+            "Status": r.status, "Rule": r.rule, "Article": r.citation,
+            "Detail": r.detail,
+        } for r in report.rules])
+        st.dataframe(cdf, hide_index=True, width="stretch")
 
     # Download (reflects manual edits). Rebuild the workbook only when this
     # option's assignments actually change, so the three tabs don't each rebuild
@@ -449,7 +445,7 @@ def _render_option(cfg: Config, opt, idx: int):
     data = _cached_workbook_bytes(idx, cfg, result, report, assignments)
     fn = output_filename(cfg).replace(".xlsx", f"_{(opt.label or 'A').split()[-1]}.xlsx")
     st.download_button(
-        f"⬇️ Download {opt.label or 'option'} (.xlsx)",
+        f"Download {opt.label or 'option'} (.xlsx)",
         data=data, file_name=fn,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", width="stretch", key=f"dl_{idx}",
@@ -510,7 +506,7 @@ def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
 
 def main():
     _init_state()
-    st.title("🩺 Pediatric Dialysis Unit Scheduler")
+    st.title("Pediatric Dialysis Unit Scheduler")
     st.markdown(
         "##### BC Children's Hospital · Hemodialysis · "
         "BCNU Provincial Collective Agreement (Art. 25–26)"

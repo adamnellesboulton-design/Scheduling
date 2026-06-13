@@ -114,6 +114,22 @@ def test_job_share_never_same_day():
     assert overlap == 0
 
 
+def test_job_share_combined_over_capacity_rejected():
+    # Two near-full lines can't job-share (combined > 1.0 FTE / too many days).
+    cfg = default_config(_friday())
+    cfg.demand = {"Mon": 2, "Wed": 2, "Fri": 2, "Sat": 2}
+    cfg.nurses = [
+        Nurse("JS_A", target_d10=24, target_d5=6, job_share_group="A"),
+        Nurse("JS_B", target_d10=24, target_d5=6, job_share_group="A"),
+        Nurse("N1", target_d10=12, target_d5=4),
+        Nurse("N2", target_d10=12, target_d5=4),
+        Nurse("N3", target_d10=12, target_d5=4),
+    ]
+    r = generate_schedule(cfg)
+    assert not r.feasible
+    assert any("Job share" in m for m in r.messages)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -57,7 +57,8 @@ Then in the browser:
      shifts are paid (Art. 17) and reduce worked D10 shifts. **FTE** is derived
      (read-only). **Everyone works Saturdays** (D5 ≥ 1, plus ≥ 1 per month).
    - **Job share**: give two lines the same label (A/B/…) and they will never
-     be scheduled on the same day (two people splitting one line).
+     be scheduled on the same day — two part-timers splitting **one full-time
+     line** (their combined FTE must be ≤ 1.0).
    - **Line preferences** (tick boxes): non-consecutive Saturdays, clustered
      shifts, and off-day preferences for Monday / Wednesday / Friday — honoured
      most in the preference-maximizing option.
@@ -126,7 +127,7 @@ and checked secondarily; the shift counts are what the generator targets.
   only change *which* days fill the counts. A pre-check explains clearly when
   counts can't be met (e.g. D5 totals must equal Saturday demand; a line's D5
   must satisfy the ≥1-per-month rule and the weekend cap; a job share's combined
-  counts must fit the available days).
+  FTE must be ≤ 1.0 and fit the available days).
 
 (FTE is derived from the counts and reported; the counts themselves are the
 hard target.)

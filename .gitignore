@@ -2,5 +2,6 @@ __pycache__/
 *.pyc
 *.xlsx
 dialysis_config.json
-.streamlit/
+.streamlit/*
+!.streamlit/config.toml
 .venv/

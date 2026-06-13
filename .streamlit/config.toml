@@ -1,0 +1,11 @@
+# Clean, minimal, professional theme.
+[theme]
+base = "light"
+primaryColor = "#0F6E6E"            # muted teal accent
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6F8"  # soft grey for sidebar / tables
+textColor = "#1F2933"               # near-black slate
+font = "sans serif"
+
+[client]
+toolbarMode = "minimal"

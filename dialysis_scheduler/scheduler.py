@@ -322,6 +322,13 @@ def shift_count_feasibility_check(
         if len(members) < 2:
             continue
         names = " + ".join(m.name for m in members)
+        combined_fte = sum(m.target_fte for m in members)
+        if combined_fte > 1.0 + 1e-9:
+            msgs.append(
+                f"Job share {label} ({names}): combined FTE {combined_fte:.2f} "
+                "exceeds 1.0. A job share splits one full-time line — lower their "
+                "shift counts so the two together are at most 1.0 FTE."
+            )
         if sum(m.worked_d10() for m in members) > n_weekday_days:
             msgs.append(
                 f"Job share {label} ({names}): combined weekday shifts "
