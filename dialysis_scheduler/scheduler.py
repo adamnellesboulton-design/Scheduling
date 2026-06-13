@@ -99,6 +99,33 @@ class PreCheck:
     messages: list = field(default_factory=list)
 
 
+def config_integrity_check(cfg: Config) -> PreCheck:
+    """Structural validation that must hold before any scheduling is attempted.
+
+    Catches data-integrity problems (no roster, blank or duplicate names) that
+    would otherwise silently corrupt the schedule -- assignments are keyed by
+    name, so duplicates would overwrite each other.
+    """
+    msgs = []
+    if not cfg.nurses:
+        msgs.append("The roster is empty -- add at least one nurse.")
+    if not cfg.operating_shifts:
+        msgs.append("No operating shifts are defined.")
+    blank = [i + 1 for i, n in enumerate(cfg.nurses) if not (n.name or "").strip()]
+    if blank:
+        msgs.append(f"Blank nurse name(s) in row(s): {blank}.")
+    names = [(n.name or "").strip() for n in cfg.nurses]
+    dupes = sorted({nm for nm in names if nm and names.count(nm) > 1})
+    if dupes:
+        msgs.append(
+            "Duplicate nurse name(s): " + ", ".join(dupes)
+            + ". Names must be unique (each line is keyed by name)."
+        )
+    if cfg.weeks < 1:
+        msgs.append("Rotation length must be at least 1 week.")
+    return PreCheck(not msgs, msgs)
+
+
 def saturday_feasibility_check(
     cfg: Config, operating: list[OperatingDate]
 ) -> PreCheck:
@@ -578,29 +605,6 @@ def _extract_assignments(cfg, operating, x, solver) -> dict:
     return assignments
 
 
-def _drifted_nurses(cfg, operating, assignments) -> list:
-    """Nurses whose scheduled FTE is outside the *base* tolerance."""
-    from .fte import scheduled_fte
-
-    drifted = []
-    for nurse in cfg.nurses:
-        hrs = _nurse_total_hours(operating, assignments.get(nurse.name, {}))
-        sf = scheduled_fte(hrs, cfg.weeks)
-        if abs(sf - nurse.target_fte) > nurse.tolerance(cfg.fte_tolerance) + 1e-9:
-            drifted.append((nurse.name, round(sf, 3), round(sf - nurse.target_fte, 3)))
-    return drifted
-
-
-def _nurse_total_hours(operating, day_map: dict) -> float:
-    total = 0.0
-    od_by_iso = {od.iso: od for od in operating}
-    for iso in day_map:
-        od = od_by_iso.get(iso)
-        if od:
-            total += od.paid_hours
-    return total
-
-
 # --- Diagnostic pass (Section 7.3) ----------------------------------------
 
 
@@ -772,6 +776,18 @@ def generate_schedules(cfg: Config, n: int = N_ALTERNATIVES) -> list[ScheduleRes
     infeasible/greedy result in a one-item list if no CP-SAT solution exists.
     """
     cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
+
+    integrity = config_integrity_check(cfg)
+    if not integrity.ok:
+        return [ScheduleResult(
+            feasible=False,
+            method="none",
+            status="CONFIG_INVALID",
+            operating=[],
+            messages=integrity.messages,
+            binding_constraints=integrity.messages,
+        )]
+
     operating = build_operating_dates(cfg)
 
     cov = coverage_feasibility_check(cfg, operating)

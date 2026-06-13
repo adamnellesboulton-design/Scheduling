@@ -35,8 +35,6 @@ BOLD = Font(bold=True)
 CENTER = Alignment(horizontal="center", vertical="center")
 THIN = Side(style="thin", color="000000")
 BORDER = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
-HEADER_BORDER = Border(left=THIN, right=THIN, top=THIN,
-                       bottom=Side(style="medium", color="000000"))
 
 
 def output_filename(cfg: Config) -> str:

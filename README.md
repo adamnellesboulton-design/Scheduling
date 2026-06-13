@@ -76,7 +76,8 @@ default) so settings survive sessions — there is no database.
 ### Run the tests
 
 ```bash
-python tests/test_smoke.py
+python tests/test_smoke.py   # core: generation, validation, Excel, FTE menu
+python tests/test_edge.py    # robustness: bad input, infeasibility, determinism
 ```
 
 ---
@@ -85,13 +86,19 @@ python tests/test_smoke.py
 
 | Module | Responsibility |
 |--------|----------------|
-| `dialysis_scheduler/config.py` | Config dataclasses, defaults, JSON load/save |
-| `dialysis_scheduler/fte.py` | FTE maths and the achievable-FTE menu (§4) |
-| `dialysis_scheduler/model.py` | Operating-date materialization, eligibility |
-| `dialysis_scheduler/scheduler.py` | CP-SAT model + greedy fallback (§5–7) |
-| `dialysis_scheduler/validator.py` | Validation pass (§8) |
-| `dialysis_scheduler/excel_export.py` | Four-sheet workbook (§9) |
-| `app.py` | Streamlit UI (§10) |
+| `dialysis_scheduler/config.py` | Config dataclasses, defaults, JSON load/save (tolerant of unknown keys) |
+| `dialysis_scheduler/model.py` | Operating-date materialization (Friday-anchored weeks), eligibility |
+| `dialysis_scheduler/holidays.py` | BC statutory-holiday dates (BCNU Art. 17) |
+| `dialysis_scheduler/scheduler.py` | CP-SAT model, pre-checks, 3-option generation, greedy fallback |
+| `dialysis_scheduler/validator.py` | Independent validation pass over the final schedule |
+| `dialysis_scheduler/excel_export.py` | Four-sheet B/W workbook |
+| `dialysis_scheduler/fte.py` | FTE maths helper (achievable-FTE menu, used by tests) |
+| `app.py` | Streamlit UI |
+
+Data flows one way: `config` → `model` (operating dates) → `scheduler`
+(CP-SAT) → `validator` → `excel_export`. The validator re-derives every metric
+from the assignments alone, so it is an **independent check** on the solver, not
+a restatement of it.
 
 ### FTE mathematics
 
@@ -137,27 +144,60 @@ as a secondary, reported check.)
 
 Ties break by seniority (senior nurses get first pick of off-Saturdays).
 
-### Generation flow
+### Stat days (BCNU Art. 17)
 
-CP-SAT solves under H1–H6 with a **deterministic** time limit (single worker →
-the same inputs always reproduce the same schedule). If infeasible, FTE
-tolerance is relaxed to ±0.13 (reporting which nurses drifted). If still
-infeasible, a diagnostic pass names the binding requirement — most often
-demand vs roster capacity, or Saturday demand vs the 25.06(E) cap (checked up
-front with a cheap pre-check) — and a greedy fallback produces a best-effort
-schedule.
+`holidays.py` computes the BC statutory holidays per year. Each line has a
+**stat-shift entitlement** (paid days off). A stat day reduces the line's
+*worked* D10 target (`worked_d10 = max(0, target_d10 − stat_days)`) and is paid
+but not scheduled. Because the unit still runs at full demand, stat time off
+only materializes when the roster has slack (total worked targets exceed
+weekday seats); otherwise coverage forces the shifts and the validator flags the
+shortfall. The app's info note shows the worked-vs-seats balance.
 
-### Excel output
+### Generation flow (`generate_schedules`)
 
-`dialysis_schedule_<start>_<end>.xlsx` with four sheets:
+1. **Config integrity** — empty roster, blank or duplicate names, no shifts → a
+   `CONFIG_INVALID` result (no solve attempted). Names must be unique because
+   assignments are keyed by name.
+2. **Cheap pre-checks** — per-day capacity (incl. job-share lines counting once),
+   the 25.06(E) Saturday cap, and the ≥1-Saturday-per-month seat count. Any
+   failure returns a plain-language reason without invoking the solver.
+3. **CP-SAT × 3** — solve once for the optimum, then twice more with a Hamming
+   diversity cut (≥ 12 differing assignments) to yield **Options A/B/C**. Each
+   solve is **deterministic** (single worker + deterministic time limit), so the
+   same inputs reproduce the same schedules byte-for-byte.
+4. **Greedy fallback** — if CP-SAT finds nothing, a diagnostic pass names the
+   binding constraint family and a greedy pass fills coverage best-effort while
+   still honouring job share and the Saturday cap.
 
-- **Schedule** — master grid (frozen panes, operating days only, Saturday
-  columns shaded, shift color codes, per-nurse totals, per-day coverage row,
-  and a legend with meal/rest entitlements and the EWD note).
-- **Summary** — per-nurse target/scheduled FTE, deviation, hours, Saturdays.
-- **Compliance** — the validation report with PASS/FAIL/INFO and article cites.
+### Excel output (plain black-and-white)
+
+`dialysis_schedule_<start>_<end>_<Option>.xlsx`, four sheets:
+
+- **Schedule** — master grid (frozen panes, operating days only, shift codes,
+  per-nurse totals, per-day coverage row, legend). No decorative fill; **red
+  flags a coverage shortfall**.
+- **Summary** — per-nurse worked-vs-target D10/D5, FTE, hours, Saturdays.
+- **Compliance** — the validation report; **FAIL = red, WARN = amber**, PASS/INFO
+  plain.
 - **Config** — a snapshot of every input (auditability; the workbook is the
   durable record per 25.05).
+
+### Failure handling
+
+Every failure mode is surfaced, never silent:
+
+| Situation | How it's handled |
+|-----------|------------------|
+| Empty roster / blank / duplicate names | `CONFIG_INVALID` + live UI error |
+| Demand > available staff on a day | Pre-check fails with the date and counts |
+| Job share leaves a day short | Pre-check counts job-share lines once; clear message |
+| Everyone can't get a monthly Saturday | Pre-check compares nurses to Saturday seats |
+| Saturday demand exceeds the 25.06(E) cap | Cheap capacity pre-check before solving |
+| Solver finds no feasible schedule | Diagnostic + greedy fallback (job share & cap still respected) |
+| Counts can't all be hit (e.g. ∑D5 ≠ seats) | Soft objective; reported as a WARN per line |
+| Old / future config JSON | `from_dict` ignores unknown keys |
+| Manual grid edit breaks coverage | Live re-validation flags it; download reflects edits |
 
 ---
 
@@ -172,6 +212,38 @@ schedule.
   recommended) and is **not** solved by the generator.
 - **Posting (25.05):** the app warns if the start date is < 6 weeks out and
   notes that changes within 10 calendar days trigger overtime (25.08).
+
+## Toward a hospital-wide system
+
+This unit scheduler is the seed for a broader system. The design choices that
+make that extension safe:
+
+- **One-way data flow + independent validator.** The validator never trusts the
+  solver; it recomputes every metric from the assignments. Any future solver
+  (or manual edit) is checked the same way.
+- **Hard vs soft separation.** Operational/contractual musts are hard
+  constraints with cheap pre-checks that fail fast and explain why; preferences
+  and equity are weighted soft terms. New units add rules in the same two tiers.
+- **Determinism.** Single-worker + deterministic time limit makes every run
+  reproducible — essential for auditing and grievance defence.
+- **Config tolerance.** `from_dict` ignores unknown keys, so saved schedules
+  survive schema changes.
+
+Known scaling considerations before multi-unit rollout:
+
+- **Identity.** Lines are keyed by **name** today (duplicates are rejected). A
+  hospital system needs stable employee **IDs**; swap the key and carry a display
+  name.
+- **Saturday-per-month (H9)** is feasible only when Saturday seats ≥ headcount
+  in every 4-week window — true for a 5-nurse unit, not for large pools. Make the
+  cadence per-unit configurable (e.g. ≥1 weekend in N).
+- **Solver size.** Variables ≈ nurses × operating-days. A 12-week unit is tiny;
+  hospital-wide needs per-unit decomposition or a longer/parallel solve budget,
+  and the 3-option diversity pass should become optional.
+- **Shift model.** Two shift types (D10/D5) are hard-coded in places (Saturday =
+  D5). Generalize to arbitrary shift definitions with per-shift demand.
+- **Out-of-scope items below** (vacation, exchanges, premiums, payroll) become
+  in-scope and need their own modules and data.
 
 ## Out of scope
 

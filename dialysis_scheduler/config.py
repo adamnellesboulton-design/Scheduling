@@ -10,7 +10,7 @@ file").
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields as dataclass_fields
 from datetime import date, datetime
 from typing import Optional
 
@@ -160,8 +160,14 @@ class Config:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":
-        shifts = [ShiftDef(**s) for s in d.get("operating_shifts", [])]
-        nurses = [Nurse(**n) for n in d.get("nurses", [])]
+        # Tolerate unknown / removed keys (forward & backward compatibility) by
+        # filtering each dict to the fields the dataclass actually declares.
+        def _only(cl, raw):
+            allowed = {f.name for f in dataclass_fields(cl)}
+            return {k: v for k, v in (raw or {}).items() if k in allowed}
+
+        shifts = [ShiftDef(**_only(ShiftDef, s)) for s in d.get("operating_shifts", [])]
+        nurses = [Nurse(**_only(Nurse, n)) for n in d.get("nurses", [])]
         known = {
             "start_date",
             "weeks",

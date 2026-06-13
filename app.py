@@ -239,6 +239,12 @@ def roster_editor():
     cfg.nurses = new_nurses
     cfg.apply_derived_ftes()
 
+    # Live data-integrity warning (names must be unique; each line keyed by name).
+    names = [n.name for n in cfg.nurses]
+    dupes = sorted({nm for nm in names if names.count(nm) > 1})
+    if dupes:
+        st.error(f"⛔ Duplicate nurse name(s): {', '.join(dupes)}. Names must be unique.")
+
     # Sanity check: requested worked counts vs available seats in the rotation.
     op = build_operating_dates(cfg)
     total_sat = sum(1 for o in op if o.is_saturday)
@@ -400,8 +406,10 @@ def _render_option(cfg: Config, opt, idx: int):
     } for s in report.nurse_summaries])
     st.dataframe(sdf, hide_index=True, width="stretch")
 
-    # Download (reflects manual edits).
-    data = workbook_bytes(cfg, result, report)
+    # Download (reflects manual edits). Rebuild the workbook only when this
+    # option's assignments actually change, so the three tabs don't each rebuild
+    # an .xlsx on every rerun.
+    data = _cached_workbook_bytes(idx, cfg, result, report, assignments)
     fn = output_filename(cfg).replace(".xlsx", f"_{(opt.label or 'A').split()[-1]}.xlsx")
     st.download_button(
         f"⬇️ Download {opt.label or 'option'} (.xlsx)",
@@ -409,6 +417,17 @@ def _render_option(cfg: Config, opt, idx: int):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary", width="stretch", key=f"dl_{idx}",
     )
+
+
+def _cached_workbook_bytes(idx, cfg, result, report, assignments):
+    sig = tuple(sorted(
+        (name, tuple(sorted(days.items()))) for name, days in assignments.items()
+    ))
+    cache = st.session_state.setdefault("_wb_cache", {})
+    if cache.get(f"sig_{idx}") != sig:
+        cache[f"sig_{idx}"] = sig
+        cache[f"bytes_{idx}"] = workbook_bytes(cfg, result, report)
+    return cache[f"bytes_{idx}"]
 
 
 def _label(od) -> str:
