@@ -262,8 +262,8 @@ def validate(cfg: Config, result) -> ValidationReport:
     report.rules.append(
         RuleResult(
             "Shift-count targets met (D10 + D5 per line)",
-            "Unit policy (primary)",
-            "PASS" if sc_ok else "WARN",
+            "Unit policy (hard)",
+            "PASS" if sc_ok else "FAIL",
             "Every line hits its requested worked shift counts (stat days excluded)."
             if sc_ok else "Off target -> " + "; ".join(sc_lines),
         )

@@ -29,16 +29,13 @@ from .model import (
 
 # Soft-objective weights.
 #
-# Hitting each line's requested SHIFT COUNTS (D10 weekday + D5 Saturday) is the
-# primary objective in every option; Saturday counts carry the most weight.
-# Always-on below the counts: minimize weekday over-staffing, keep low-FTE lines
-# working regularly, and a minor FTE smoother. Seniority plays NO part in
-# generation -- lines are picked by seniority afterward.
-W_SHIFT_D5 = 9000  # penalty per Saturday shift off the requested D5 count
-W_SHIFT_D10 = 5000  # penalty per weekday shift off the requested D10 count
+# Each line's requested SHIFT COUNTS (worked D10 + D5) are HARD constraints --
+# they are guaranteed in every option (see the per-nurse equalities and the
+# shift_count_feasibility_check). Coverage is also hard. The weights below only
+# shape the *arrangement* of those fixed counts: minimize weekday over-staffing
+# and keep low-FTE lines engaged. Seniority plays NO part in generation.
 W_THREE_OF_FOUR = 1500  # low-FTE lines: push to work >=3 of every 4 weeks
 W_EXTRA = 600  # penalty per extra (over-demand) nurse on a weekday
-W_FTE_DEV = 2  # minor penalty per half-hour of derived-FTE deviation
 
 # Three options, each maximizing a different secondary goal. The dict gives the
 # weight of each differentiating term per profile.
@@ -244,10 +241,100 @@ def sat_per_month_feasibility_check(
             msgs.append(
                 f"Weeks {ws + 1}-{we + 1}: {n_required} nurses each need a Saturday "
                 f"but only {seats} Saturday seats exist in that month. Raise Saturday "
-                "demand, waive some lines off Saturdays, or shorten the window."
+                "demand or shorten the rotation."
             )
             break  # one message is enough
     return PreCheck(ok, msgs)
+
+
+def _h9_min_saturdays(weeks: int) -> int:
+    """Fewest Saturdays one nurse must work so every rolling 4-week window has >=1.
+
+    Greedy hitting set over the [ws, ws+3] windows.
+    """
+    if weeks < SAT_PER_MONTH_WINDOW:
+        return 1
+    placed: list[int] = []
+    for ws in range(0, weeks - SAT_PER_MONTH_WINDOW + 1):
+        end = ws + SAT_PER_MONTH_WINDOW - 1
+        if not placed or placed[-1] < ws:  # last placed Saturday not in this window
+            placed.append(end)
+    return len(placed) or 1
+
+
+def shift_count_feasibility_check(
+    cfg: Config, operating: list[OperatingDate]
+) -> PreCheck:
+    """Validate the requested shift counts are satisfiable (they are now HARD).
+
+    Catches the common ways exact counts conflict with coverage and the Saturday
+    rules, with a clear message instead of an opaque 'infeasible'.
+    """
+    msgs = []
+    sats = saturday_dates(operating)
+    n_saturdays = len(sats)
+    sat_seats = sum(od.demand for od in sats)
+    wd_seats = sum(od.demand for od in operating if not od.is_saturday)
+    sum_worked_d10 = sum(n.worked_d10() for n in cfg.nurses)
+    sum_d5 = sum(n.target_d5 for n in cfg.nurses)
+    h9_min = _h9_min_saturdays(cfg.weeks)
+    sat_cap = _sat_cap_for_span(cfg.weeks, min(cfg.weeks, SAT_WINDOW_WEEKS))
+
+    if sum_worked_d10 < wd_seats:
+        msgs.append(
+            f"Weekday shifts: the worked-D10 counts total {sum_worked_d10} but "
+            f"{wd_seats} are needed to cover weekday demand. Raise some D10 counts "
+            "or lower weekday demand."
+        )
+    if sum_d5 != sat_seats:
+        msgs.append(
+            f"Saturday shifts: the D5 counts total {sum_d5} but Saturday coverage "
+            f"needs exactly {sat_seats} ({n_saturdays} Saturdays x demand). Adjust "
+            "the D5 counts so they sum to that."
+        )
+    for n in cfg.nurses:
+        elig_sat = sum(1 for od in sats if od.iso not in n.unavailable_dates)
+        if n.target_d5 > elig_sat:
+            msgs.append(
+                f"{n.name}: D5 count {n.target_d5} exceeds the {elig_sat} Saturdays "
+                "available to them."
+            )
+        elif n.target_d5 < h9_min:
+            msgs.append(
+                f"{n.name}: D5 count {n.target_d5} is below the {h9_min} Saturdays "
+                "needed to meet the >=1-per-month rule. Raise it."
+            )
+        elif n.target_d5 > sat_cap and cfg.weeks >= SAT_WINDOW_WEEKS:
+            msgs.append(
+                f"{n.name}: D5 count {n.target_d5} would exceed the 1-in-3 weekend "
+                f"cap ({sat_cap} per 9 weeks). Lower it."
+            )
+
+    # Job-share groups never work the same day, so a group's combined counts
+    # cannot exceed the number of operating days of each type.
+    n_weekday_days = sum(1 for od in operating if not od.is_saturday)
+    js: dict[str, list] = {}
+    for n in cfg.nurses:
+        label = (n.job_share_group or "").strip()
+        if label:
+            js.setdefault(label, []).append(n)
+    for label, members in js.items():
+        if len(members) < 2:
+            continue
+        names = " + ".join(m.name for m in members)
+        if sum(m.worked_d10() for m in members) > n_weekday_days:
+            msgs.append(
+                f"Job share {label} ({names}): combined weekday shifts "
+                f"{sum(m.worked_d10() for m in members)} exceed the {n_weekday_days} "
+                "weekday days available (partners never share a day). Lower their "
+                "D10 counts — a job share splits one line between two part-timers."
+            )
+        if sum(m.target_d5 for m in members) > n_saturdays:
+            msgs.append(
+                f"Job share {label} ({names}): combined Saturday shifts exceed the "
+                f"{n_saturdays} Saturdays available. Lower their D5 counts."
+            )
+    return PreCheck(not msgs, msgs)
 
 
 # --- CP-SAT model ----------------------------------------------------------
@@ -362,16 +449,6 @@ def _solve_cpsat(
             if window_vars:
                 model.Add(sum(window_vars) >= 1)
 
-    # Per-nurse worked hours (half-hour units) -- derived FTE smoother only.
-    period_full = WEEKLY_FULL_TIME_HOURS * weeks
-    nurse_hours_expr = {}
-    for ni, nurse in enumerate(nurses):
-        nurse_hours_expr[ni] = sum(
-            x[(ni, oi)] * half_hours(operating[oi].paid_hours)
-            for oi in range(len(operating))
-            if (ni, oi) in x
-        )
-
     # --- Soft objective terms ---------------------------------------------
     obj_terms = []
 
@@ -379,13 +456,9 @@ def _solve_cpsat(
     for extra in extra_terms:
         obj_terms.append(W_EXTRA * extra)
 
-    sats = saturday_dates(operating)
-    max_sat = len(sats)
-    n_wd_days = sum(1 for od in operating if not od.is_saturday)
-
-    # 1. Shift-count matching (PRIMARY): hit each line's requested number of D10
-    #    weekday shifts and D5 Saturday shifts. L1 deviation, Saturdays weighted
-    #    highest. This is prioritized over the FTE flex.
+    # 1. Shift-count matching (HARD): each line works exactly its requested
+    #    worked-D10 (target minus paid stat days) and D5 counts. Guaranteed in
+    #    every option -- the profiles only change which days fill those counts.
     for ni, nurse in enumerate(nurses):
         d10_actual = sum(
             x[(ni, oi)]
@@ -397,16 +470,8 @@ def _solve_cpsat(
             for oi, od in enumerate(operating)
             if od.is_saturday and (ni, oi) in x
         )
-        worked_d10 = nurse.worked_d10()  # target minus paid stat days (Art. 17)
-        d10_dev = model.NewIntVar(0, n_wd_days + worked_d10, f"d10dev_{ni}")
-        model.Add(d10_dev >= d10_actual - worked_d10)
-        model.Add(d10_dev >= worked_d10 - d10_actual)
-        obj_terms.append(W_SHIFT_D10 * d10_dev)
-
-        d5_dev = model.NewIntVar(0, max_sat + nurse.target_d5, f"d5dev_{ni}")
-        model.Add(d5_dev >= d5_actual - nurse.target_d5)
-        model.Add(d5_dev >= nurse.target_d5 - d5_actual)
-        obj_terms.append(W_SHIFT_D5 * d5_dev)
+        model.Add(d10_actual == nurse.worked_d10())
+        model.Add(d5_actual == nurse.target_d5)
 
     # 2. Weekday equity within FTE class (balance each weekday across equals).
     #    Weight depends on the option profile (high for "equity-maximizing").
@@ -489,18 +554,7 @@ def _solve_cpsat(
                 if prof["pattern"]:
                     obj_terms.append(prof["pattern"] * diff)
 
-    # 4. Derived-FTE deviation (minor smoother): keep worked hours near the hours
-    #    implied by the requested shift counts.
-    d10p_hh = half_hours(cfg.d10_paid())
-    satp_hh = half_hours(cfg.sat_paid())
-    for ni, nurse in enumerate(nurses):
-        # Worked-hours target (stat days are paid but not worked).
-        target_hh = nurse.worked_d10() * d10p_hh + nurse.target_d5 * satp_hh
-        max_hh = half_hours(period_full)
-        dev = model.NewIntVar(0, max_hh + target_hh, f"ftedev_{ni}")
-        model.Add(dev >= nurse_hours_expr[ni] - target_hh)
-        model.Add(dev >= target_hh - nurse_hours_expr[ni])
-        obj_terms.append(W_FTE_DEV * dev)
+    # (FTE is now fixed by the hard shift counts, so there is no FTE smoother.)
 
     # 5. Line preferences (soft). Flat weight per honoured preference (no
     #    seniority). Strong in the "preference-maximizing" option, light in the
@@ -825,14 +879,15 @@ def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
     cov = coverage_feasibility_check(cfg, operating)
     sat = saturday_feasibility_check(cfg, operating)
     month = sat_per_month_feasibility_check(cfg, operating)
-    if not cov.ok or not sat.ok or not month.ok:
+    counts = shift_count_feasibility_check(cfg, operating)
+    if not cov.ok or not sat.ok or not month.ok or not counts.ok:
         diag = _diagnose(cfg, operating)
         return [ScheduleResult(
             feasible=False,
             method="none",
             status="PRECHECK_INFEASIBLE",
             operating=operating,
-            messages=cov.messages + sat.messages + month.messages,
+            messages=cov.messages + sat.messages + month.messages + counts.messages,
             binding_constraints=diag,
         )]
 

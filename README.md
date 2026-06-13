@@ -121,17 +121,22 @@ and checked secondarily; the shift counts are what the generator targets.
 - **H8** Job-share lines (same label) never work the same day.
 - **H9** **Everyone** works **≥ 1 Saturday per rolling 4-week window** ("at
   least one Saturday per month") — there is no Saturday waiver.
+- **H10** **Each line works exactly its requested shift counts** — worked D10
+  (target minus paid stat days) and D5. Guaranteed in every option; the profiles
+  only change *which* days fill the counts. A pre-check explains clearly when
+  counts can't be met (e.g. D5 totals must equal Saturday demand; a line's D5
+  must satisfy the ≥1-per-month rule and the weekend cap; a job share's combined
+  counts must fit the available days).
 
-(FTE is no longer a hard band — the shift counts are the target, with FTE flex
-as a secondary, reported check.)
+(FTE is derived from the counts and reported; the counts themselves are the
+hard target.)
 
 ### Soft objectives — three options per run
 
-Every option satisfies all hard constraints and hits each line's **shift counts**
-(D10 weekday + D5 Saturday, Saturday weighted highest), minimizes weekday
-over-staffing, keeps low-FTE lines engaged (≥3 of every 4 weeks), and applies a
-minor FTE smoother. **Seniority is not used** in generation — lines are picked
-by seniority afterward, so the schedule is re-chosen anyway.
+Every option satisfies all hard constraints — including each line's exact
+**shift counts** (H10) — minimizes weekday over-staffing, and keeps low-FTE
+lines engaged (≥3 of every 4 weeks). **Seniority is not used** in generation —
+lines are picked by seniority afterward, so the schedule is re-chosen anyway.
 
 The three options differ only in which **secondary goal** they push:
 
@@ -195,7 +200,7 @@ Every failure mode is surfaced, never silent:
 | Everyone can't get a monthly Saturday | Pre-check compares nurses to Saturday seats |
 | Saturday demand exceeds the 25.06(E) cap | Cheap capacity pre-check before solving |
 | Solver finds no feasible schedule | Diagnostic + greedy fallback (job share & cap still respected) |
-| Counts can't all be hit (e.g. ∑D5 ≠ seats) | Soft objective; reported as a WARN per line |
+| Shift counts can't be met (∑D5 ≠ seats, D5 below the monthly rule, job-share counts too big) | Pre-check fails with a specific, actionable message before solving |
 | Old / future config JSON | `from_dict` ignores unknown keys |
 | Manual grid edit breaks coverage | Live re-validation flags it; download reflects edits |
 

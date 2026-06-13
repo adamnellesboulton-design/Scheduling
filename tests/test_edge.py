@@ -94,18 +94,22 @@ def test_three_profile_options_and_deterministic():
 
 
 def test_job_share_never_same_day():
-    # Sat = 2 keeps the >=1-Saturday-per-month rule feasible for 5 nurses so the
-    # solver actually runs (this test must not pass vacuously).
+    # A realistic job share: two part-timers splitting one line. Counts are sized
+    # so the hard shift-counts, coverage and Saturday rules are all satisfiable.
     cfg = default_config(_friday())
     cfg.demand = {"Mon": 2, "Wed": 2, "Fri": 2, "Sat": 2}
-    for n in cfg.nurses[:2]:
-        n.job_share_group = "A"
+    cfg.nurses = [
+        Nurse("JS_A", target_d10=10, target_d5=3, job_share_group="A"),
+        Nurse("JS_B", target_d10=10, target_d5=3, job_share_group="A"),
+        Nurse("N1", target_d10=18, target_d5=6),
+        Nurse("N2", target_d10=18, target_d5=6),
+        Nurse("N3", target_d10=16, target_d5=6),
+    ]
     r = generate_schedule(cfg)
     assert r.feasible and r.method == "cp-sat"
-    a, b = cfg.nurses[0].name, cfg.nurses[1].name
     overlap = sum(
         1 for od in r.operating
-        if od.iso in r.assignments[a] and od.iso in r.assignments[b]
+        if od.iso in r.assignments["JS_A"] and od.iso in r.assignments["JS_B"]
     )
     assert overlap == 0
 
