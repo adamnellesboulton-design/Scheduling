@@ -143,6 +143,24 @@ def validate(cfg: Config, result) -> ValidationReport:
         )
     )
 
+    # --- Unavailability respected (H3) ------------------------------------
+    # Catches manual edits/swaps that would put a nurse on an unavailable date.
+    unavail_bad = []
+    for nurse in cfg.nurses:
+        worked = _nurse_worked_dates(assignments, nurse.name)
+        for iso in nurse.unavailable_dates:
+            if iso in worked:
+                unavail_bad.append(f"{nurse.name} on {iso}")
+    report.rules.append(
+        RuleResult(
+            "No one works an unavailable date",
+            "25.06(B) / leave (H3)",
+            "PASS" if not unavail_bad else "FAIL",
+            "All unavailable dates respected."
+            if not unavail_bad else "Scheduled on leave -> " + "; ".join(unavail_bad),
+        )
+    )
+
     # --- Job share: partners never work the same day (H8) -----------------
     js_groups: dict[str, list] = {}
     for nurse in cfg.nurses:

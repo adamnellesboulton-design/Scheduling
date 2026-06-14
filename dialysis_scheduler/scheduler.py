@@ -262,6 +262,16 @@ def _h9_min_saturdays(weeks: int) -> int:
     return len(placed) or 1
 
 
+def _period_max_saturdays(weeks: int) -> int:
+    """Most Saturdays one nurse can work while keeping <=6 in every rolling
+    9-week window (25.06(E)). Not simply 6 once the rotation exceeds 9 weeks.
+    """
+    if weeks < SAT_WINDOW_WEEKS:
+        return (SAT_MAX_PER_9WK * weeks) // SAT_WINDOW_WEEKS
+    full, rem = divmod(weeks, SAT_WINDOW_WEEKS)
+    return full * SAT_MAX_PER_9WK + min(SAT_MAX_PER_9WK, rem)
+
+
 def shift_count_feasibility_check(
     cfg: Config, operating: list[OperatingDate]
 ) -> PreCheck:
@@ -278,7 +288,7 @@ def shift_count_feasibility_check(
     sum_worked_d10 = sum(n.worked_d10() for n in cfg.nurses)
     sum_d5 = sum(n.target_d5 for n in cfg.nurses)
     h9_min = _h9_min_saturdays(cfg.weeks)
-    sat_cap = _sat_cap_for_span(cfg.weeks, min(cfg.weeks, SAT_WINDOW_WEEKS))
+    sat_max = _period_max_saturdays(cfg.weeks)  # most Saturdays one line may work
 
     if sum_worked_d10 < wd_seats:
         msgs.append(
@@ -304,10 +314,11 @@ def shift_count_feasibility_check(
                 f"{n.name}: D5 count {n.target_d5} is below the {h9_min} Saturdays "
                 "needed to meet the >=1-per-month rule. Raise it."
             )
-        elif n.target_d5 > sat_cap and cfg.weeks >= SAT_WINDOW_WEEKS:
+        elif n.target_d5 > sat_max:
             msgs.append(
-                f"{n.name}: D5 count {n.target_d5} would exceed the 1-in-3 weekend "
-                f"cap ({sat_cap} per 9 weeks). Lower it."
+                f"{n.name}: D5 count {n.target_d5} can't satisfy the 1-in-3 weekend "
+                f"cap (<=6 per 9 weeks) over {cfg.weeks} weeks — the most workable "
+                f"is {sat_max}. Lower it."
             )
 
     # Job-share groups never work the same day, so a group's combined counts

@@ -329,7 +329,8 @@ def generate_section():
             i: copy.deepcopy(o.assignments) for i, o in enumerate(options)
         }
         for k in list(st.session_state.keys()):
-            if str(k).startswith(("swapA_", "swapB_", "setn_", "setd_", "setv_")):
+            if str(k).startswith(("swapA_", "swapB_", "setn_", "setd_",
+                                  "setv_", "pending_swap_")):
                 del st.session_state[k]
         st.session_state.pop("_wb_cache", None)
 
@@ -419,18 +420,56 @@ def _render_option(cfg: Config, opt, idx: int):
         labels = [s[0] for s in shifts]
         st.caption("Swap two shifts — the two nurses trade days. Counts and "
                    "coverage stay intact, and everything re-checks below.")
+        # Default B to a fully-valid swap partner for A (same shift type,
+        # different day & nurse, neither already working the other's day).
+        b_default = None
+        if labels:
+            od_by_iso = {od.iso: od for od in operating}
+            a0 = shifts[0]  # (label, nurse, iso)
+            a_code = od_by_iso[a0[2]].shift.code
+
+            def _valid_b(s):
+                return (od_by_iso[s[2]].shift.code == a_code and s[2] != a0[2]
+                        and s[1] != a0[1] and a0[2] not in assignments.get(s[1], {})
+                        and s[2] not in assignments.get(a0[1], {}))
+
+            b_default = next((k for k, s in enumerate(shifts) if _valid_b(s)),
+                             min(1, len(labels) - 1))
         c1, c2, c3 = st.columns([5, 5, 2])
         a = c1.selectbox("Shift A", labels, key=f"swapA_{idx}",
                          index=0 if labels else None)
-        b = c2.selectbox("Shift B", labels, key=f"swapB_{idx}",
-                         index=min(1, len(labels) - 1) if labels else None)
+        b = c2.selectbox("Shift B", labels, key=f"swapB_{idx}", index=b_default)
         c3.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
+        pend_key = f"pending_swap_{idx}"
         if c3.button("Swap", key=f"swapbtn_{idx}", width="stretch") and labels:
             A = next(s for s in shifts if s[0] == a)
             B = next(s for s in shifts if s[0] == b)
-            msg = _do_swap(assignments, (A[1], A[2]), (B[1], B[2]), operating)
-            if msg:
-                st.warning(msg)
+            unavail = {n.name: set(n.unavailable_dates) for n in cfg.nurses}
+            err = _swap_error(assignments, (A[1], A[2]), (B[1], B[2]), operating)
+            if not err and B[2] in unavail.get(A[1], set()):
+                err = f"{A[1]} is unavailable on that day — can't swap onto it."
+            elif not err and A[2] in unavail.get(B[1], set()):
+                err = f"{B[1]} is unavailable on that day — can't swap onto it."
+            if err:
+                st.warning(err)
+            else:
+                st.session_state[pend_key] = (A, B)
+
+        # Confirmation step before a swap is applied.
+        pending = st.session_state.get(pend_key)
+        if pending:
+            A, B = pending
+            st.info(f"Swap **{A[0]}** with **{B[0]}**? "
+                    "The two nurses will trade these days.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Confirm swap", key=f"confirm_{idx}",
+                          type="primary", width="stretch"):
+                msg = _do_swap(assignments, (A[1], A[2]), (B[1], B[2]), operating)
+                st.session_state.pop(pend_key, None)
+                if msg:
+                    st.warning(msg)
+            if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
+                st.session_state.pop(pend_key, None)
 
         st.divider()
         st.caption("Or set one cell directly.")
@@ -521,17 +560,34 @@ def _worked_shifts(assignments: dict, operating) -> list:
     return [(lbl, name, iso) for _d, lbl, name, iso in items]
 
 
-def _do_swap(assignments: dict, A, B, operating) -> str:
-    """Swap two assignments: the two nurses trade days. Returns a warning or ''."""
+def _swap_error(assignments: dict, A, B, operating) -> str:
+    """Validate a swap without mutating; return a message or '' if it's clean."""
     (nA, iA), (nB, iB) = A, B
+    od_by_iso = {od.iso: od for od in operating}
     if nA == nB:
         return "Pick shifts from two different nurses."
     if iA == iB:
         return "Pick two different days."
+    if iA not in assignments.get(nA, {}):
+        return "Shift A is no longer in the schedule — re-pick it."
+    if iB not in assignments.get(nB, {}):
+        return "Shift B is no longer in the schedule — re-pick it."
+    if od_by_iso[iA].shift.code != od_by_iso[iB].shift.code:
+        return ("Swap two shifts of the same type (both weekday D10 or both "
+                "Saturday D5) so the counts stay intact.")
     if iB in assignments.get(nA, {}):
         return f"{nA} already works that day — nothing to swap."
     if iA in assignments.get(nB, {}):
         return f"{nB} already works that day — nothing to swap."
+    return ""
+
+
+def _do_swap(assignments: dict, A, B, operating) -> str:
+    """Swap two assignments: the two nurses trade days. Returns a warning or ''."""
+    err = _swap_error(assignments, A, B, operating)
+    if err:
+        return err
+    (nA, iA), (nB, iB) = A, B
     od_by_iso = {od.iso: od for od in operating}
     assignments[nA].pop(iA, None)
     assignments[nB].pop(iB, None)
