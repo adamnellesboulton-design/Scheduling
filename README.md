@@ -63,10 +63,15 @@ Then in the browser:
      shifts, and off-day preferences for Monday / Wednesday / Friday — honoured
      most in the preference-maximizing option.
 3. Press **GO** — nothing is scheduled until you do. You get **three options —
-   preference-, equity- and cluster-maximizing** — in tabs; each has an
-   **editable grid** (click a cell to move a shift, compliance + download update
-   live) and its own **Download .xlsx**. On infeasibility you get a banner explaining which
-   requirement binds.
+   preference-, equity- and cluster-maximizing** — in tabs. Each tab has:
+   - a **"How this schedule was built"** explainer (what the option optimized
+     and the guarantees that hold in every option),
+   - the schedule grid, a per-nurse summary, and the compliance report,
+   - an **Adjust** panel to **swap two shifts** (two nurses trade days — counts
+     and coverage stay intact) or set a single cell, with live re-validation,
+   - its own **Download .xlsx** (reflecting any manual edits).
+
+   On infeasibility you get a banner explaining which requirement binds.
 
 The Excel output is **plain black-and-white** — colour is used only to flag
 problems (coverage shortfalls and FAIL/WARN rows) so it prints cleanly.
