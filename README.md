@@ -5,7 +5,9 @@ unit**. It generates compliant, equitable master work schedules under the BCNU
 Provincial Collective Agreement (Articles 25 & 26) and exports them as clean,
 print-ready Excel workbooks. It's built to grow into a hospital-wide system.
 
-> **Resuming this project?** Jump to [Project status & where to pick up](#project-status--where-to-pick-up).
+> **Resuming this project?** Jump to [Project status & where to pick up](#project-status--where-to-pick-up),
+> and see [`DEVELOPMENT.md`](DEVELOPMENT.md) for the code-level developer map
+> (function index, the CP-SAT model, decision log, debugging recipes).
 
 ---
 
