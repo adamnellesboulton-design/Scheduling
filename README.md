@@ -84,15 +84,17 @@ python tests/test_profiles.py     # the three options each do their job
    and a **Download .xlsx** that reflects any edits.
 
 ### Adjusting a schedule (manual edits)
+- **Click a cell** in the grid to change it — pick the day's shift code to staff
+  it or blank for off. (Streamlit can't do drag-and-drop; click-to-edit is the
+  direct equivalent.)
 - **Swap two shifts** — pick Shift A and Shift B; **a confirmation appears**, and
-  on confirm the two nurses trade days. Counts and coverage are preserved by
-  construction. Swapping onto a nurse's unavailable date is blocked.
-- **Set a cell** — mark a nurse Working/Off on a day.
+  on confirm the two nurses trade days (counts/coverage preserved; swapping onto
+  an unavailable date is blocked).
 - **Reset to generated** — discard manual edits.
 
-Everything **re-validates live** — the status banner and the compliance report
-update instantly, and the download reflects the edits. Edits are held in a
-session working copy; pressing GO again starts fresh.
+Everything **re-validates live** — the status banner and compliance report update
+instantly, and the download reflects the edits. Edits live in a session working
+copy; pressing GO again starts fresh.
 
 ---
 

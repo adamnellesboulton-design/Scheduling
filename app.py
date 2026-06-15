@@ -333,9 +333,9 @@ def generate_section():
         st.session_state["work"] = {
             i: copy.deepcopy(o.assignments) for i, o in enumerate(options)
         }
+        st.session_state["gridver"] = {i: 0 for i in range(len(options))}
         for k in list(st.session_state.keys()):
-            if str(k).startswith(("swapA_", "swapB_", "setn_", "setd_",
-                                  "setv_", "pending_swap_")):
+            if str(k).startswith(("swapA_", "swapB_", "pending_swap_", "grid_")):
                 del st.session_state[k]
         st.session_state.pop("_wb_cache", None)
 
@@ -414,23 +414,41 @@ def _render_option(cfg: Config, opt, idx: int):
                     + PROFILE_DESC.get(opt.label, ""))
         st.markdown(GUARANTEES)
 
-    # Visual slots are reserved first so the controls (processed below) can
-    # mutate the schedule before the grid / summary are drawn into the slots.
-    status_slot = st.container()
-    grid_slot = st.container()
+    gridver = st.session_state.setdefault("gridver", {})
+    gridver.setdefault(idx, 0)
 
-    # --- Adjust controls -------------------------------------------------
-    with st.expander("Adjust this schedule (swap or edit shifts)"):
+    status_slot = st.container()  # filled after edits are applied
+
+    # --- Editable grid: click a cell to change it -------------------------
+    st.caption(
+        "**Click a cell** to change it — pick the shift code to staff it, or "
+        "blank for off. (Dragging isn't supported; the name column is pinned.) "
+        "Or use **Swap** below to trade two shifts in one step. Everything "
+        "re-checks live."
+    )
+    base_df = _grid_df(cfg, assignments, operating)
+    col_cfg = {"Nurse": st.column_config.TextColumn(
+        "Nurse", disabled=True, pinned=True, width="small")}
+    for od in operating:
+        col_cfg[_label(od)] = st.column_config.SelectboxColumn(
+            _label(od), options=["", od.shift.code, "LV"], width="small",
+        )
+    edited = st.data_editor(
+        base_df, hide_index=True, num_rows="fixed", width="stretch",
+        column_config=col_cfg, key=f"grid_{idx}_{gridver[idx]}",
+    )
+    # Persist cell edits into the working copy.
+    work[idx] = _assignments_from_grid(edited, cfg, operating)
+    assignments = work[idx]
+
+    # --- Swap two shifts (one action, preserves counts) -------------------
+    with st.expander("Swap two shifts / reset"):
         shifts = _worked_shifts(assignments, operating)
         labels = [s[0] for s in shifts]
-        st.caption("Swap two shifts — the two nurses trade days. Counts and "
-                   "coverage stay intact, and everything re-checks below.")
-        # Default B to a fully-valid swap partner for A (same shift type,
-        # different day & nurse, neither already working the other's day).
         b_default = None
         if labels:
             od_by_iso = {od.iso: od for od in operating}
-            a0 = shifts[0]  # (label, nurse, iso)
+            a0 = shifts[0]
             a_code = od_by_iso[a0[2]].shift.code
 
             def _valid_b(s):
@@ -460,7 +478,6 @@ def _render_option(cfg: Config, opt, idx: int):
             else:
                 st.session_state[pend_key] = (A, B)
 
-        # Confirmation step before a swap is applied.
         pending = st.session_state.get(pend_key)
         if pending:
             A, B = pending
@@ -471,31 +488,18 @@ def _render_option(cfg: Config, opt, idx: int):
                           type="primary", width="stretch"):
                 msg = _do_swap(assignments, (A[1], A[2]), (B[1], B[2]), operating)
                 st.session_state.pop(pend_key, None)
+                gridver[idx] += 1  # remount the grid with the swapped data
                 if msg:
                     st.warning(msg)
             if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
                 st.session_state.pop(pend_key, None)
 
-        st.divider()
-        st.caption("Or set one cell directly.")
-        d1, d2, d3, d4 = st.columns([4, 4, 3, 2])
-        nm = d1.selectbox("Nurse", [n.name for n in cfg.nurses], key=f"setn_{idx}")
-        od_labels = {_label(od): od for od in operating}
-        dl = d2.selectbox("Day", list(od_labels), key=f"setd_{idx}")
-        val = d3.selectbox("Set to", ["Working", "Off"], key=f"setv_{idx}")
-        d4.markdown("<div style='height:1.7em'></div>", unsafe_allow_html=True)
-        if d4.button("Apply", key=f"setbtn_{idx}", width="stretch"):
-            od = od_labels[dl]
-            if val == "Working":
-                assignments[nm][od.iso] = od.shift.code
-            else:
-                assignments[nm].pop(od.iso, None)
-
         if st.button("Reset to generated", key=f"reset_{idx}"):
             work[idx] = copy.deepcopy(opt.assignments)
             assignments = work[idx]
+            gridver[idx] += 1
 
-    # --- Re-validate the (possibly edited) schedule and draw the slots ----
+    # --- Re-validate the (possibly edited) schedule and draw the status ---
     result = replace(opt, assignments=assignments)
     report = validate(cfg, result)
 
@@ -514,13 +518,6 @@ def _render_option(cfg: Config, opt, idx: int):
                        + "; ".join(r.rule for r in other_warns))
         elif not report.unfilled_shifts:
             st.success("All checks pass — this schedule is compliant.")
-
-    with grid_slot:
-        st.dataframe(
-            _style_grid(_grid_df(cfg, assignments, operating)),
-            hide_index=True, width="stretch",
-            column_config={"Nurse": st.column_config.TextColumn(pinned=True)},
-        )
 
     # Per-nurse summary.
     st.markdown("**Per-nurse summary**")
@@ -567,6 +564,23 @@ def _worked_shifts(assignments: dict, operating) -> list:
                               name, iso))
     items.sort(key=lambda t: (t[0], t[1]))
     return [(lbl, name, iso) for _d, lbl, name, iso in items]
+
+
+def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
+    """Rebuild the assignments dict from the edited grid (a cell holding the
+    day's shift code = working; blank / LV = off)."""
+    lbl_to_od = {_label(od): od for od in operating}
+    valid = {n.name for n in cfg.nurses}
+    assignments = {n.name: {} for n in cfg.nurses}
+    for _, row in df.iterrows():
+        name = str(row.get("Nurse") or "").strip()
+        if name not in valid:
+            continue
+        for lbl, od in lbl_to_od.items():
+            v = str(row.get(lbl) or "").strip().upper()
+            if v and v != "LV":
+                assignments[name][od.iso] = od.shift.code
+    return assignments
 
 
 def _swap_error(assignments: dict, A, B, operating) -> str:

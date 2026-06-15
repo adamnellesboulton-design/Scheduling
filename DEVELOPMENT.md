@@ -157,6 +157,12 @@ Session-state keys: `cfg`, `options` (list of `ScheduleResult`), `work`
 (`{idx: assignments}` — the editable working copy), `_wb_cache`,
 `swapA_{idx}`/`swapB_{idx}`, `setn_/setd_/setv_{idx}`, `pending_swap_{idx}`.
 
+The grid is an **editable `st.data_editor`** (click a cell → dropdown). Its key
+is versioned (`grid_{idx}_{gridver[idx]}`); the **Swap**/**Reset** buttons mutate
+`work[idx]` and bump `gridver[idx]` so the editor remounts from the mutated copy.
+Each render flushes the editor's cells back into `work[idx]` via
+`_assignments_from_grid`. (True drag-and-drop isn't available in Streamlit.)
+
 `_render_option` pattern:
 1. "How this schedule was built" expander (de-blackboxing).
 2. **Reserve `status_slot` / `grid_slot` containers** *before* the Adjust
