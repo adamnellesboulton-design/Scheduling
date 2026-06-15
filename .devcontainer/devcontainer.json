@@ -1,9 +1,16 @@
 {
   "name": "Pediatric Dialysis Unit Scheduler",
-  "image": "mcr.microsoft.com/devcontainers/python:3.11",
 
-  // Install dependencies once, when the Codespace is first created.
-  "postCreateCommand": "pip install --upgrade pip && pip install -r requirements.txt",
+  // Use the official Python image from Docker Hub. The previous base
+  // (mcr.microsoft.com/devcontainers/python) depends on Microsoft's container
+  // registry, which intermittently returns 401 "credentials may be expired" and
+  // fails the Codespace build (it failed even for the alpine recovery image).
+  // Docker Hub removes that dependency.
+  "image": "python:3.11-slim-bookworm",
+
+  // git isn't in the slim image; install it, then the Python dependencies.
+  // Runs once, when the Codespace is first created.
+  "postCreateCommand": "apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* && pip install --upgrade pip && pip install -r requirements.txt",
 
   // Start the Streamlit app automatically every time you open the Codespace.
   "postAttachCommand": {
