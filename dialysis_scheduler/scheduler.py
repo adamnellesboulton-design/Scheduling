@@ -27,6 +27,7 @@ from .model import (
     build_operating_dates,
     saturday_dates,
     nurse_eligible_for,
+    is_worked,
 )
 from .holidays import holidays_in_range
 
@@ -935,6 +936,9 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 
     sat_windows = _sat_window_bounds(weeks)
 
+    # Friday that anchors each week, for the Friday-before-Saturday guarantee.
+    fri_iso_by_week = {od.week_index: od.iso for od in operating if od.weekday == 4}
+
     def sat_ok(nurse: Nurse, od: OperatingDate) -> bool:
         # Check every rolling window containing this Saturday stays within cap.
         worked = sat_worked_by_week[nurse.name]
@@ -946,6 +950,16 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
                     return False
         return True
 
+    def fixed_ok(nurse: Nurse, od: OperatingDate) -> bool:
+        # Honour the per-line HARD guarantees even in the fallback.
+        if nurse.fixed_off_mon and od.weekday == 0:
+            return False
+        if nurse.fixed_fri_before_sat and od.is_saturday:
+            fri = fri_iso_by_week.get(od.week_index)  # need the Friday worked first
+            if not (fri and is_worked(assignments[nurse.name].get(fri))):
+                return False
+        return True
+
     for od in sorted(operating, key=lambda o: (o.d, o.weekday)):
         candidates = [
             n
@@ -953,6 +967,7 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
             if nurse_eligible_for(n, od)
             and od.iso not in assignments[n.name]
             and (not od.is_saturday or sat_ok(n, od))
+            and fixed_ok(n, od)
         ]
         # Prefer nurses most below their target hours; name for a stable order.
         candidates.sort(
@@ -983,6 +998,25 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
                 sat_worked_by_week[n.name][wk] = (
                     sat_worked_by_week[n.name].get(wk, 0) + 1
                 )
+
+    # Work-every-week repair: every fixed_work_weekly line must have >= 1 WEEKDAY
+    # shift each week. Best-effort: this may add an extra nurse beyond demand.
+    weekday_ods_by_week: dict[int, list[OperatingDate]] = {}
+    for od in operating:
+        if not od.is_saturday:
+            weekday_ods_by_week.setdefault(od.week_index, []).append(od)
+    for n in nurses:
+        if not n.fixed_work_weekly:
+            continue
+        for wk, ods in weekday_ods_by_week.items():
+            if any(is_worked(assignments[n.name].get(o.iso)) for o in ods):
+                continue
+            for o in sorted(ods, key=lambda o: (o.d, o.weekday)):
+                if (nurse_eligible_for(n, o) and o.iso not in assignments[n.name]
+                        and fixed_ok(n, o)):
+                    assignments[n.name][o.iso] = o.shift.code
+                    accrued[n.name] += o.paid_hours
+                    break
 
     feasible = len(binding) == 0
     msgs = ["Greedy fallback used (CP-SAT found no feasible solution)."]

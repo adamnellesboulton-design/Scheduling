@@ -141,6 +141,12 @@ Variables: `x[(ni, oi)] ∈ {0,1}` for each eligible nurse × operating date.
   Saturday is preceded by its Friday); if the Friday is ineligible the Saturday
   is forced off. Pre-checked: worked D10 ≥ D5.
 
+All three fixed guarantees are also honoured by the **greedy fallback**
+(`_greedy`): `fixed_ok()` filters candidates for Monday-off and Fri-before-Sat,
+and a post-fill repair pass adds a weekday for any `fixed_work_weekly` line that
+would otherwise be idle a week. So the guarantees hold on every solve path, not
+just CP-SAT.
+
 **Soft objective** = `Σ obj_terms` (minimized). Per-profile weights in
 `OBJECTIVE_PROFILES`:
 
