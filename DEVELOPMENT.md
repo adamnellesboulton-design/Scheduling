@@ -78,9 +78,9 @@ Helpers: `_sat_window_bounds(weeks)`, `_sat_cap_for_span(weeks, span)`,
 `_h9_min_saturdays(weeks)` (greedy hitting set), `_period_max_saturdays(weeks)`
 (`{6:4,9:6,12:9,18:12,24:18}`), `half_hours(h)` (CP-SAT is integer; hours ×2).
 
-Model + solve: `_solve_cpsat(cfg, operating, profile, det_time)` builds the
-model, sets `OBJECTIVE_PROFILES[profile]` weights, solves deterministically,
-returns a `ScheduleResult(label=profile_label)`.
+Model + solve: `_solve_cpsat(cfg, operating, profile, seconds)` builds the
+model, sets `OBJECTIVE_PROFILES[profile]` weights, solves with a multi-worker
+portfolio under a wall-clock budget, returns a `ScheduleResult(label=profile_label)`.
 
 Entry points:
 - `generate_schedules(cfg, profiles=PROFILE_ORDER)` → integrity → pre-checks →
@@ -166,9 +166,12 @@ Always-on: `W_EXTRA=600` (weekday over-staffing), `W_THREE_OF_FOUR=1500`
 - **sat_spread** (global) — penalize back-to-back Saturdays for everyone.
 - **cluster_all** (global) — reward off/off adjacency for everyone.
 
-**Determinism:** `num_search_workers = 1`, `max_deterministic_time = det_time`
-(`ALT_DET_TIME=8` when generating 3, `DET_TIME_LIMIT=12` for one),
-`random_seed = 42`. Do **not** rely on `max_time_in_seconds` for the stop point.
+**Speed/quality:** `num_search_workers = SEARCH_WORKERS` (8) with a wall-clock
+`max_time_in_seconds` budget (`PER_OPTION_SECONDS=2.5` when generating 3,
+`SINGLE_OPTION_SECONDS=4.0` for one); options solved **sequentially** in
+`generate_schedules`. Multi-worker LNS makes this ~3× faster and higher-quality
+than the old single-worker deterministic solve, but it is **not** byte-reproducible.
+`random_seed = 42` is still set but does not guarantee identical multi-worker runs.
 
 ---
 
@@ -231,14 +234,16 @@ natural rerun a button click triggers.
   coverage is still expected on holidays (blanks otherwise).
 - **Friday start**; weeks anchored to the start weekday.
 - **Excel is B/W**; colour only flags problems (for clean printing).
-- **Deterministic** via single worker + deterministic time limit.
+- **Multi-worker** solve (not byte-reproducible) for ~3× speed + better quality;
+  re-runs stay feasible/compliant with identical exact counts.
 - **Coverage is conditional** — hard when the roster can cover (guarantees full
   staffing, prunes the search), soft (blank shifts) only when short-staffed. This
   fixed a case where a fully-soft coverage + short solve budget left avoidable
   blanks.
-- **The 3 profiles solve in parallel** (`ThreadPoolExecutor`; OR-Tools releases
-  the GIL during `Solve`) — GO dropped ~70 s → ~18 s. Each solve is still
-  single-worker + deterministic-time, so reproducibility holds.
+- **The 3 profiles solve sequentially**, each with an 8-worker portfolio under a
+  wall-clock budget — GO ≈ 7–8 s (was ~18 s single-worker). Earlier this was
+  thread-per-profile single-worker; multi-worker per solve already saturates the
+  cores, so parallel profiles would only oversubscribe.
 - **No meal-designation toggle** — missed meals are OT (Art. 27).
 
 ---

@@ -83,13 +83,10 @@ def test_stat_days_exceed_target_clamped():
     validate(cfg, r)  # must not raise
 
 
-def test_three_profile_options_and_deterministic():
+def test_three_profile_options():
     cfg = default_config(_friday())
     a = generate_schedules(cfg)
-    b = generate_schedules(cfg)
     assert 1 <= len(a) <= 3
-    # reproducible
-    assert all(x.assignments == y.assignments for x, y in zip(a, b))
     # labelled by objective profile
     labels = [r.label for r in a]
     assert labels == ["Preference-maximizing", "Equity-maximizing",

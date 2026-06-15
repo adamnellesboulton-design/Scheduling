@@ -13,8 +13,6 @@ All hours are carried in integer half-hour units inside the model (9.5h -> 19,
 from __future__ import annotations
 
 import math
-import os
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Optional
@@ -101,13 +99,15 @@ THREE_OF_FOUR_MIN_ACTIVE = 3
 # Everyone (not waived) works >=1 Saturday per rolling 4-week window (H9).
 SAT_PER_MONTH_WINDOW = 4
 
-# The deterministic time limit governs the stopping point (reproducible). The
-# wall-clock cap is a pure safety valve set well above it so it never fires on
-# normal hardware and therefore never injects nondeterminism.
-DET_TIME_LIMIT = 8.0  # deterministic time units (solution plateaus well before this)
-SOLVER_TIME_LIMIT_S = 90.0  # wall-clock safety cap
+# Each option is solved with a multi-worker portfolio (so CP-SAT's LNS workers
+# improve the incumbent fast) under a wall-clock budget. Multi-worker search is
+# not byte-reproducible, but it is ~3x faster AND finds better schedules than a
+# single deterministic worker; all hard rules / exact counts still hold. Options
+# are solved sequentially so each gets the full core budget.
+SEARCH_WORKERS = 8  # portfolio workers per solve (LNS needs > 1); fine on 4 cores
+PER_OPTION_SECONDS = 2.5  # wall-clock budget per option when producing several
+SINGLE_OPTION_SECONDS = 4.0  # a lone option can afford a little longer
 RANDOM_SEED = 42
-ALT_DET_TIME = 5.0  # per-option solve budget (three options solved in parallel)
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
 SAT_MAX_PER_9WK = 6
@@ -431,7 +431,7 @@ def _solve_cpsat(
     cfg: Config,
     operating: list[OperatingDate],
     profile: str = "preference",
-    det_time: float = DET_TIME_LIMIT,
+    seconds: float = SINGLE_OPTION_SECONDS,
 ) -> ScheduleResult:
     prof = OBJECTIVE_PROFILES[profile]
     model = cp_model.CpModel()
@@ -805,13 +805,12 @@ def _solve_cpsat(
 
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = RANDOM_SEED
-    # Reproducibility: a single worker plus a *deterministic* time limit makes
-    # the stopping point independent of wall-clock speed, so identical inputs
-    # always yield byte-identical schedules. A generous wall-clock cap guards
-    # against pathological cases on slow hardware.
-    solver.parameters.num_search_workers = 1
-    solver.parameters.max_deterministic_time = det_time
-    solver.parameters.max_time_in_seconds = SOLVER_TIME_LIMIT_S
+    # Multi-worker portfolio under a wall-clock budget: the extra workers run
+    # CP-SAT's LNS, which improves the incumbent far faster than a single worker
+    # (so we get better schedules in less time). Not byte-reproducible, but every
+    # hard rule and exact shift count still holds.
+    solver.parameters.num_search_workers = SEARCH_WORKERS
+    solver.parameters.max_time_in_seconds = seconds
     status = solver.Solve(model)
 
     status_name = solver.StatusName(status)
@@ -1078,14 +1077,11 @@ def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
             binding_constraints=diag,
         )]
 
-    det = DET_TIME_LIMIT if len(profiles) <= 1 else ALT_DET_TIME
-    # Solve the profiles in parallel -- OR-Tools releases the GIL during Solve,
-    # so threads give a real ~Nx speedup while each solve stays deterministic.
-    with ThreadPoolExecutor(max_workers=min(len(profiles), os.cpu_count() or 1)) as ex:
-        raw = list(ex.map(
-            lambda p: _solve_cpsat(cfg, operating, profile=p, det_time=det),
-            profiles,
-        ))
+    seconds = SINGLE_OPTION_SECONDS if len(profiles) <= 1 else PER_OPTION_SECONDS
+    # Solve the profiles sequentially: each solve already uses a multi-worker
+    # portfolio that saturates the cores, so the old thread-per-profile parallel
+    # layout would just oversubscribe and slow everything down.
+    raw = [_solve_cpsat(cfg, operating, profile=p, seconds=seconds) for p in profiles]
 
     results = [r for r in raw if r.feasible]
     if not results:  # rare after the pre-checks -> best-effort greedy

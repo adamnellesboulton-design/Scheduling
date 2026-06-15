@@ -254,12 +254,15 @@ def test_fixed_fri_before_sat_guaranteed():
     print("  fri-before-sat: every Leslie Saturday is preceded by its Friday")
 
 
-def test_determinism():
+def test_reruns_stay_compliant():
+    # Multi-worker solving is no longer byte-reproducible, but every run must
+    # still be feasible, contract-compliant and hit the exact shift counts.
     cfg = default_config(_friday())
-    a = generate_schedules(cfg)
-    b = generate_schedules(cfg)
-    assert all(x.assignments == y.assignments for x, y in zip(a, b))
-    print("  determinism: identical across runs")
+    for run in (generate_schedules(cfg), generate_schedules(cfg)):
+        assert run[0].feasible
+        for o in run:
+            assert not check_contract(cfg, o), o.label
+    print("  re-runs: every option compliant (counts/rules stable, layout may vary)")
 
 
 if __name__ == "__main__":

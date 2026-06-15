@@ -156,9 +156,11 @@ the secondary goal they push (weights in `OBJECTIVE_PROFILES`):
 | Equity-maximizing | per-nurse weekday-type balance + evenly-spaced Saturdays |
 | Cluster-maximizing | global off/off adjacency → long days-off blocks |
 
-Each profile is solved **independently and deterministically** (single worker +
-deterministic time limit), so identical inputs reproduce the same three
-schedules byte-for-byte.
+Each profile is solved independently with a **multi-worker portfolio** (CP-SAT's
+LNS workers) under a short wall-clock budget — about **3× faster** than the old
+single-worker solve and with **better-optimized** schedules. Re-running the same
+inputs may produce slightly different schedules, but every option is always
+feasible, contract-compliant and hits the exact requested shift counts.
 
 ### Statutory holidays (BCNU Art. 17)
 `holidays.py` computes the BC stat holidays per year. A line's **stat-shift
@@ -177,11 +179,12 @@ number of (weekday) holidays in the period.
    shift-count feasibility check (∑D5 = Saturday seats; each D5 within the
    monthly minimum and the period Saturday max; ∑worked-D10 ≥ weekday seats;
    job-share combined counts/FTE fit).
-3. **CP-SAT × 3 profiles** — one deterministic solve each, **run in parallel**
-   (OR-Tools releases the GIL, so threads give a real ~3× speedup; GO ≈ 18 s).
+3. **CP-SAT × 3 profiles** — each solved with a **multi-worker portfolio** under a
+   short wall-clock budget, **sequentially** (one solve already saturates the
+   cores). GO ≈ 7–8 s.
 4. **Greedy fallback** — if CP-SAT finds nothing, a diagnostic names the binding
-   rule and a greedy pass fills coverage best-effort (still honouring job share &
-   the Saturday cap).
+   rule and a greedy pass fills coverage best-effort (still honouring job share,
+   the Saturday cap, and the per-line fixed guarantees).
 
 ### Excel output (plain black-and-white)
 `dialysis_schedule_<start>_<end>_<Option>.xlsx`, landscape + fit-to-width, with a
@@ -208,13 +211,14 @@ validation report; FAIL = red, WARN = amber), **Config** (full input snapshot).
 
 **State:** feature-complete for the single unit; presented to staff/managers.
 Branch: `claude/blissful-hypatia-abtscx`. All four test suites pass; output is
-deterministic and contract-compliant across 6/9/12/18-week rotations and all
-three profiles.
+contract-compliant across 6/9/12/18-week rotations and all three profiles.
 
 ### Implementation gotchas (read before changing solver code)
-- **Determinism** comes from `num_search_workers = 1` + a **deterministic** time
-  limit (`DET_TIME_LIMIT` / `ALT_DET_TIME`), not wall-clock. Don't switch to a
-  wall-clock limit or multiple workers without re-checking reproducibility.
+- **Speed** comes from a **multi-worker** portfolio (`SEARCH_WORKERS`) under a
+  wall-clock budget (`PER_OPTION_SECONDS` / `SINGLE_OPTION_SECONDS`), solved
+  sequentially. This is **not** byte-reproducible (multi-worker LNS); re-runs stay
+  feasible/compliant but may differ. Going back to 1 worker + deterministic time
+  restores reproducibility at ~3× the runtime.
 - **Counts are HARD** (`H10`). Secondary objectives can't change them — verified
   by `test_compliance` / `test_profiles`. If you re-soften them, the validator
   rule must move back to WARN.
