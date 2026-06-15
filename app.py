@@ -132,23 +132,19 @@ def roster_editor():
         "lines are picked by seniority afterward."
     )
 
-    d10p, satp = cfg.d10_paid(), cfg.sat_paid()
-    denom = cfg.weekly_full_time_hours * cfg.weeks
-
     rows = []
     for n in cfg.nurses:
-        hrs = n.target_d10 * d10p + n.target_d5 * satp
         rows.append({
             "name": n.name,
             "d10": int(n.target_d10),
             "d5": int(n.target_d5),
             "stat": int(n.stat_days),
-            "fte": round(hrs / denom, 3) if denom else 0.0,
             "job_share": n.job_share_group,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
             "fixed_off_mon": n.fixed_off_mon,
             "fixed_work_weekly": n.fixed_work_weekly,
+            "fixed_fri_before_sat": n.fixed_fri_before_sat,
             "pref_off_wed": n.pref_off_wed,
             "pref_off_fri": n.pref_off_fri,
             "unavailable_dates": ", ".join(n.unavailable_dates),
@@ -176,10 +172,6 @@ def roster_editor():
                 help="Paid statutory-holiday days (Art. 17); each reduces worked "
                      "D10 shifts by one. Capped at the holidays in the period.",
             ),
-            "fte": st.column_config.NumberColumn(
-                "FTE (derived)", disabled=True, format="%.3f",
-                help="Computed from the shift counts; not directly editable.",
-            ),
             "job_share": st.column_config.SelectboxColumn(
                 "Job share", options=["", "A", "B", "C", "D"],
                 help="Put the SAME label on two lines to job-share them — "
@@ -200,9 +192,14 @@ def roster_editor():
             ),
             "fixed_work_weekly": st.column_config.CheckboxColumn(
                 "Work weekly",
-                help="HARD guarantee: this line works at least one shift every "
-                     "week (never idle a whole week). Needs enough D10/D5 shifts "
+                help="HARD guarantee: this line works at least one WEEKDAY shift "
+                     "every week (Saturdays don't count). Needs enough D10 shifts "
                      "to cover every week.",
+            ),
+            "fixed_fri_before_sat": st.column_config.CheckboxColumn(
+                "Fri before Sat",
+                help="HARD guarantee: whenever this line works a Saturday, it also "
+                     "works the preceding Friday. Needs D10 >= D5.",
             ),
             "pref_off_wed": st.column_config.CheckboxColumn(
                 "Off Wed", help="Prefer Wednesdays off"
@@ -242,6 +239,7 @@ def roster_editor():
             pref_clustered=bool(r["pref_clustered"]),
             fixed_off_mon=bool(r.get("fixed_off_mon", False)),
             fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
+            fixed_fri_before_sat=bool(r.get("fixed_fri_before_sat", False)),
             pref_off_wed=bool(r["pref_off_wed"]),
             pref_off_fri=bool(r["pref_off_fri"]),
         ))

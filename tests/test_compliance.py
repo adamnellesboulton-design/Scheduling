@@ -213,7 +213,8 @@ def test_fixed_off_mon_guaranteed():
 
 
 def test_fixed_work_weekly_guaranteed():
-    """A line ticked 'Work weekly' works >=1 shift every week in any option."""
+    """A line ticked 'Work weekly' works >=1 WEEKDAY shift every week (Saturdays
+    don't count) in any option."""
     cfg = default_config(_friday())
     for n in cfg.nurses:
         if n.name == "Joane":
@@ -225,9 +226,32 @@ def test_fixed_work_weekly_guaranteed():
         assert not check_contract(cfg, o), o.label
         for wk in weeks:
             worked = any(is_worked(o.assignments["Joane"].get(d.iso))
-                         for d in op if d.week_index == wk)
-            assert worked, f"{o.label}: Joane idle in week {wk}"
-    print(f"  work weekly: Joane works all {len(weeks)} weeks in all options")
+                         for d in op if d.week_index == wk and not d.is_saturday)
+            assert worked, f"{o.label}: Joane no weekday in week {wk}"
+    print(f"  work weekly: Joane works a weekday in all {len(weeks)} weeks")
+
+
+def test_fixed_fri_before_sat_guaranteed():
+    """A line ticked 'Fri before Sat' works the preceding Friday for every
+    worked Saturday, in any option."""
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Leslie":
+            n.fixed_fri_before_sat = True
+    opts = generate_schedules(cfg)
+    op = build_operating_dates(cfg)
+    fri_by_wk = {d.week_index: d.iso for d in op if d.weekday == 4}
+    sbw = _sat_by_week(op)
+    for o in opts:
+        assert not check_contract(cfg, o), o.label
+        a = o.assignments["Leslie"]
+        for wk, sats in sbw.items():
+            for s in sats:
+                if a.get(s) == "D5":
+                    fri = fri_by_wk.get(wk)
+                    assert fri and is_worked(a.get(fri)), \
+                        f"{o.label}: Sat {s} worked without its Friday"
+    print("  fri-before-sat: every Leslie Saturday is preceded by its Friday")
 
 
 def test_determinism():

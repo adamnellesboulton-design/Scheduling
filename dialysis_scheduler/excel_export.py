@@ -341,6 +341,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
             prefs.append("Mon off (fixed)")
         if nurse.fixed_work_weekly:
             prefs.append("work weekly")
+        if nurse.fixed_fri_before_sat:
+            prefs.append("Fri before Sat")
         if nurse.pref_off_wed:
             prefs.append("off Wed")
         if nurse.pref_off_fri:

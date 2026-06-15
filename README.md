@@ -63,16 +63,17 @@ python tests/test_profiles.py     # the three options each do their job
 2. **Roster table** — one row per nurse:
    - **D10**, **D5** (≥ 1), **Stat** shift counts over the rotation (no upper
      cap — scale them up for longer rotations). These counts are the **hard
-     target**; **FTE** is derived (read-only). Stat shifts are paid
-     statutory-holiday days that reduce worked D10. **Everyone works Saturdays**
-     (D5 ≥ 1).
+     target**. Stat shifts are paid statutory-holiday days that reduce worked
+     D10. **Everyone works Saturdays** (D5 ≥ 1).
    - **Job share** label — two lines with the same label never work the same day
      (two part-timers splitting **one** full-time line; combined FTE ≤ 1.0).
    - **Preferences** (tick boxes) — non-consecutive Saturdays, clustered shifts,
      off Wed/Fri. Honoured most in the preference option.
    - **Fixed guarantees** (tick boxes, HARD in all three options) — **Mon off
-     (fixed)** (line never works a Monday) and **Work weekly** (line works at
-     least one shift every week). These are enforced, not just preferred.
+     (fixed)** (line never works a Monday), **Work weekly** (line works at least
+     one *weekday* shift every week; Saturdays don't count), and **Fri before
+     Sat** (whenever the line works a Saturday it also works the preceding
+     Friday). These are enforced, not just preferred.
    - **Unavailable dates** — comma-separated `YYYY-MM-DD`.
    - **Seniority is not used** — lines are picked by seniority *after*
      generation, so it's left out of the build.

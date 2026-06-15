@@ -36,9 +36,10 @@ tests/
   `.paid_hours(meal_flag)`.
 - `Nurse(name, target_fte, target_d10, target_d5, stat_days, unavailable_dates,
   fte_tolerance, job_share_group, pref_nonconsec_sat, pref_clustered,
-  pref_off_wed, pref_off_fri, fixed_off_mon, fixed_work_weekly)` —
-  `fixed_off_mon`/`fixed_work_weekly` are HARD per-line guarantees (never works a
-  Monday / never idle a whole week), enforced in all three options. `.worked_d10()` =
+  pref_off_wed, pref_off_fri, fixed_off_mon, fixed_work_weekly,
+  fixed_fri_before_sat)` — the `fixed_*` flags are HARD per-line guarantees (never
+  works a Monday / works a weekday every week / Friday before each worked
+  Saturday), enforced in all three options. `.worked_d10()` =
   `max(0, target_d10 - stat_days)`; `.target_hours(d10_paid, sat_paid)`.
   **No `seniority_rank`, no `fixed_saturdays_off`** (both removed).
 - `Config(start_date, weeks, demand, weekly_demand_override,
@@ -133,9 +134,12 @@ Variables: `x[(ni, oi)] ∈ {0,1}` for each eligible nurse × operating date.
   as H3), so it can never be scheduled a Monday. A specific day also falls back
   to soft coverage when `len(vars_for_day) < demand` (heavy opt-out → blank
   Mondays, never infeasible).
-- `fixed_work_weekly` — `Σ x over each week ≥ 1` for that line (weeks with no
-  eligible day are skipped). Pre-checked: total shifts must reach the available
-  week count, else a clear message instead of infeasibility.
+- `fixed_work_weekly` — `Σ weekday x over each week ≥ 1` for that line (Saturdays
+  don't count; weeks with no eligible weekday are skipped). Pre-checked: worked
+  D10 must reach the available week count, else a clear message.
+- `fixed_fri_before_sat` — for each week, `x[Fri] ≥ x[Sat]` (every worked
+  Saturday is preceded by its Friday); if the Friday is ineligible the Saturday
+  is forced off. Pre-checked: worked D10 ≥ D5.
 
 **Soft objective** = `Σ obj_terms` (minimized). Per-profile weights in
 `OBJECTIVE_PROFILES`:

@@ -346,21 +346,29 @@ def shift_count_feasibility_check(
                     "fixed guarantee). Lower the D10 count or untick Mondays off."
                 )
 
-        # A "work every week" line needs at least one shift for each week it has
-        # any eligible day -- so its total shifts must reach that many weeks.
+        # A "work every week" line needs at least one WEEKDAY shift for each week
+        # it has an eligible weekday -- so its worked D10 count must reach that.
         if n.fixed_work_weekly:
             weeks_avail = len({
                 od.week_index for od in operating
-                if nurse_eligible_for(n, od)
+                if not od.is_saturday and nurse_eligible_for(n, od)
                 and not (n.fixed_off_mon and od.weekday == 0)
             })
-            total_shifts = n.worked_d10() + n.target_d5
-            if total_shifts < weeks_avail:
+            if n.worked_d10() < weeks_avail:
                 msgs.append(
-                    f"{n.name}: only {total_shifts} shifts can't cover every one of "
-                    f"the {weeks_avail} weeks (work-every-week is a fixed guarantee). "
-                    "Raise the D10/D5 counts or untick work every week."
+                    f"{n.name}: only {n.worked_d10()} weekday shifts can't cover "
+                    f"every one of the {weeks_avail} weeks (work-every-week is a "
+                    "fixed guarantee). Raise the D10 count or untick work every week."
                 )
+
+        # Friday-before-Saturday needs at least one worked Friday per worked
+        # Saturday, so the worked D10 count must be >= the D5 count.
+        if n.fixed_fri_before_sat and n.worked_d10() < n.target_d5:
+            msgs.append(
+                f"{n.name}: {n.worked_d10()} weekday shifts can't supply a Friday "
+                f"for each of {n.target_d5} Saturdays (Friday-before-Saturday is a "
+                "fixed guarantee). Raise D10 or lower D5."
+            )
 
     # Job-share groups never work the same day, so a group's combined counts
     # cannot exceed the number of operating days of each type.
@@ -517,19 +525,41 @@ def _solve_cpsat(
             if window_vars:
                 model.Add(sum(window_vars) <= cap)
 
-    # Fixed "work every week": a HARD guarantee the line works >= 1 shift each
-    # week (no fully-idle weeks). Weeks where the line has no eligible day (e.g.
-    # fully on approved leave) are skipped -- you can't work when you're off.
-    ois_by_week: dict[int, list[int]] = {}
+    # Fixed "work every week": a HARD guarantee the line works >= 1 WEEKDAY shift
+    # each week (no fully-idle weeks). Saturdays don't count -- the cadence is
+    # about being present on the unit during the week. Weeks where the line has no
+    # eligible weekday (e.g. fully on approved leave) are skipped.
+    weekday_ois_by_week: dict[int, list[int]] = {}
     for oi, od in enumerate(operating):
-        ois_by_week.setdefault(od.week_index, []).append(oi)
+        if not od.is_saturday:
+            weekday_ois_by_week.setdefault(od.week_index, []).append(oi)
     for ni, nurse in enumerate(nurses):
         if not nurse.fixed_work_weekly:
             continue
-        for wk, ois in ois_by_week.items():
+        for wk, ois in weekday_ois_by_week.items():
             wk_vars = [x[(ni, oi)] for oi in ois if (ni, oi) in x]
             if wk_vars:
                 model.Add(sum(wk_vars) >= 1)
+
+    # Fixed Friday-before-Saturday: a HARD guarantee that every worked Saturday is
+    # preceded by its Friday (the Friday of the same Friday-anchored week). If that
+    # Friday isn't workable (e.g. on leave), the Saturday can't be worked either.
+    fri_oi_by_week: dict[int, int] = {}
+    for oi, od in enumerate(operating):
+        if od.weekday == 4:  # Friday anchors the week
+            fri_oi_by_week[od.week_index] = oi
+    for ni, nurse in enumerate(nurses):
+        if not nurse.fixed_fri_before_sat:
+            continue
+        for wk, sat_ois in sat_indices_by_week.items():
+            fri_oi = fri_oi_by_week.get(wk)
+            for sat_oi in sat_ois:
+                if (ni, sat_oi) not in x:
+                    continue
+                if fri_oi is not None and (ni, fri_oi) in x:
+                    model.Add(x[(ni, fri_oi)] >= x[(ni, sat_oi)])
+                else:
+                    model.Add(x[(ni, sat_oi)] == 0)  # no Friday => no Saturday
 
     # H8: job share -- lines sharing a non-empty label never work the same day
     # (two people splitting one line). At most one member of the group may be
