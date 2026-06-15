@@ -80,9 +80,12 @@ class Nurse:
     # Line preferences (soft).
     pref_nonconsec_sat: bool = False  # avoid back-to-back Saturdays
     pref_clustered: bool = False  # prefer worked days grouped (e.g. Fri+Sat)
-    pref_off_mon: bool = False  # prefer Mondays off
     pref_off_wed: bool = False  # prefer Wednesdays off
     pref_off_fri: bool = False  # prefer Fridays off
+    # Fixed days off (HARD): the line is never scheduled this weekday.
+    fixed_off_mon: bool = False  # never works a Monday
+    # Fixed cadence (HARD): the line works at least one shift every week.
+    fixed_work_weekly: bool = False  # never idle a whole week
 
     def tolerance(self, default: float) -> float:
         return self.fte_tolerance if self.fte_tolerance is not None else default

@@ -337,8 +337,10 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
             prefs.append("non-consec Sat")
         if nurse.pref_clustered:
             prefs.append("cluster shifts")
-        if nurse.pref_off_mon:
-            prefs.append("off Mon")
+        if nurse.fixed_off_mon:
+            prefs.append("Mon off (fixed)")
+        if nurse.fixed_work_weekly:
+            prefs.append("work weekly")
         if nurse.pref_off_wed:
             prefs.append("off Wed")
         if nurse.pref_off_fri:

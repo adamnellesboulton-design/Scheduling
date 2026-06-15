@@ -121,14 +121,15 @@ def roster_editor():
     st.header("Nurse roster")
 
     st.caption(
-        "Set each line's number of **10-hour weekday shifts (D10, 0–40)**, "
-        "**5-hour Saturday shifts (D5, 1–10)** and **stat shifts (0–10)** over the "
-        "rotation. The counts are the primary target; stat shifts are paid "
-        "statutory-holiday days (BCNU Art. 17) that reduce worked D10 shifts. "
-        "**FTE** is derived (read-only). Preferences are honoured in the "
-        "preference-maximizing option. Same **Job share** label = two lines never "
-        "work the same day. **Everyone works Saturdays** (≥1 per month). "
-        "Seniority is not used — lines are picked by seniority afterward."
+        "Set each line's number of **10-hour weekday shifts (D10)**, "
+        "**5-hour Saturday shifts (D5, ≥ 1)** and **stat shifts** over the whole "
+        "rotation (no upper cap — scale them up for longer rotations). The counts "
+        "are the primary target; stat shifts are paid statutory-holiday days "
+        "(BCNU Art. 17) shown as **ST** on the actual holiday dates. **FTE** is "
+        "derived (read-only). Preferences are honoured in the preference-maximizing "
+        "option. Same **Job share** label = two lines never work the same day. "
+        "**Everyone works Saturdays** (≥ 1 per month). Seniority is not used — "
+        "lines are picked by seniority afterward."
     )
 
     d10p, satp = cfg.d10_paid(), cfg.sat_paid()
@@ -146,7 +147,8 @@ def roster_editor():
             "job_share": n.job_share_group,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
-            "pref_off_mon": n.pref_off_mon,
+            "fixed_off_mon": n.fixed_off_mon,
+            "fixed_work_weekly": n.fixed_work_weekly,
             "pref_off_wed": n.pref_off_wed,
             "pref_off_fri": n.pref_off_fri,
             "unavailable_dates": ", ".join(n.unavailable_dates),
@@ -160,18 +162,19 @@ def roster_editor():
         column_config={
             "name": st.column_config.TextColumn("Name", required=True),
             "d10": st.column_config.NumberColumn(
-                "D10 shifts", min_value=0, max_value=40, step=1,
-                help="Number of 10-hour weekday shifts over the rotation (0–40).",
+                "D10 shifts", min_value=0, step=1,
+                help="Number of 10-hour weekday shifts over the whole rotation "
+                     "(no upper cap — scale it up for longer rotations).",
             ),
             "d5": st.column_config.NumberColumn(
-                "D5 shifts", min_value=1, max_value=10, step=1,
-                help="Number of 5-hour Saturday shifts over the rotation (1–10). "
-                     "Everyone works some Saturdays.",
+                "D5 shifts", min_value=1, step=1,
+                help="Number of 5-hour Saturday shifts over the rotation "
+                     "(>= 1; no upper cap). Everyone works some Saturdays.",
             ),
             "stat": st.column_config.NumberColumn(
-                "Stat shifts", min_value=0, max_value=10, step=1,
+                "Stat shifts", min_value=0, step=1,
                 help="Paid statutory-holiday days (Art. 17); each reduces worked "
-                     "D10 shifts by one.",
+                     "D10 shifts by one. Capped at the holidays in the period.",
             ),
             "fte": st.column_config.NumberColumn(
                 "FTE (derived)", disabled=True, format="%.3f",
@@ -189,8 +192,17 @@ def roster_editor():
                 "Cluster shifts",
                 help="Group worked days (e.g. Fri+Sat) for longer consecutive days off"
             ),
-            "pref_off_mon": st.column_config.CheckboxColumn(
-                "Off Mon", help="Prefer Mondays off"
+            "fixed_off_mon": st.column_config.CheckboxColumn(
+                "Mon off (fixed)",
+                help="HARD guarantee: this line is NEVER scheduled a Monday, in "
+                     "all three options. May leave a Monday short (blank shift) if "
+                     "too many lines opt out.",
+            ),
+            "fixed_work_weekly": st.column_config.CheckboxColumn(
+                "Work weekly",
+                help="HARD guarantee: this line works at least one shift every "
+                     "week (never idle a whole week). Needs enough D10/D5 shifts "
+                     "to cover every week.",
             ),
             "pref_off_wed": st.column_config.CheckboxColumn(
                 "Off Wed", help="Prefer Wednesdays off"
@@ -228,7 +240,8 @@ def roster_editor():
             job_share_group=str(r.get("job_share") or "").strip(),
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
             pref_clustered=bool(r["pref_clustered"]),
-            pref_off_mon=bool(r["pref_off_mon"]),
+            fixed_off_mon=bool(r.get("fixed_off_mon", False)),
+            fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
             pref_off_wed=bool(r["pref_off_wed"]),
             pref_off_fri=bool(r["pref_off_fri"]),
         ))
@@ -335,7 +348,9 @@ def generate_section():
         }
         st.session_state["gridver"] = {i: 0 for i in range(len(options))}
         for k in list(st.session_state.keys()):
-            if str(k).startswith(("swapA_", "swapB_", "pending_swap_", "grid_")):
+            if str(k).startswith(("swapA_", "swapB_", "pending_swap_",
+                                  "pending_reset_", "grid_", "confirm_",
+                                  "cancel_", "confirmreset_", "cancelreset_")):
                 del st.session_state[k]
         st.session_state.pop("_wb_cache", None)
 
@@ -485,6 +500,22 @@ def _render_option(cfg: Config, opt, idx: int):
             A, B = pending
             st.info(f"Swap **{A[0]}** with **{B[0]}**? "
                     "The two nurses will trade these days.")
+            # Preview the swap's compliance impact BEFORE applying it.
+            trial = copy.deepcopy(assignments)
+            _do_swap(trial, (A[1], A[2]), (B[1], B[2]), operating)
+            trep = validate(cfg, replace(opt, assignments=trial))
+            tfail = [r.rule for r in trep.rules if r.status == "FAIL"]
+            twarn = [r.rule for r in trep.rules if r.status == "WARN"
+                     and not r.rule.startswith("Daily coverage")]
+            if tfail:
+                st.error("After this swap it would **break compliance**: "
+                         + "; ".join(tfail))
+            elif twarn or trep.unfilled_shifts:
+                bits = ([f"{trep.unfilled_shifts} blank shift(s)"]
+                        if trep.unfilled_shifts else []) + twarn
+                st.warning("After this swap, to review: " + "; ".join(bits))
+            else:
+                st.success("After this swap the schedule stays fully compliant.")
             cc1, cc2 = st.columns(2)
             if cc1.button("Confirm swap", key=f"confirm_{idx}",
                           type="primary", width="stretch"):
@@ -496,10 +527,22 @@ def _render_option(cfg: Config, opt, idx: int):
             if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
                 st.session_state.pop(pend_key, None)
 
-        if st.button("Reset to generated", key=f"reset_{idx}"):
-            work[idx] = copy.deepcopy(opt.assignments)
-            assignments = work[idx]
-            gridver[idx] += 1
+        # Reset to generated -- with a confirmation (it discards manual edits).
+        reset_key = f"pending_reset_{idx}"
+        if st.button("Reset to generated", key=f"reset_{idx}", width="stretch"):
+            st.session_state[reset_key] = True
+        if st.session_state.get(reset_key):
+            st.warning("Discard **all manual edits** and restore the generated "
+                       "schedule for this option?")
+            rc1, rc2 = st.columns(2)
+            if rc1.button("Confirm reset", key=f"confirmreset_{idx}",
+                          type="primary", width="stretch"):
+                work[idx] = copy.deepcopy(opt.assignments)
+                assignments = work[idx]
+                gridver[idx] += 1
+                st.session_state.pop(reset_key, None)
+            if rc2.button("Keep edits", key=f"cancelreset_{idx}", width="stretch"):
+                st.session_state.pop(reset_key, None)
 
     # --- Re-validate the (possibly edited) schedule and draw the status ---
     result = replace(opt, assignments=assignments)

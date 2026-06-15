@@ -195,6 +195,41 @@ def test_unavailable_and_stat_compliant():
           "Adam works 22/24 D10 (2 stat), Kathleen off her unavailable day")
 
 
+def test_fixed_off_mon_guaranteed():
+    """A line ticked 'Mon off (fixed)' never works a Monday in any option."""
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Adam":
+            n.fixed_off_mon = True
+    opts = generate_schedules(cfg)
+    op = build_operating_dates(cfg)
+    mondays = [d.iso for d in op if d.weekday == 0]
+    for o in opts:
+        assert opts[0].feasible
+        assert not check_contract(cfg, o), o.label
+        worked = [d for d in mondays if is_worked(o.assignments["Adam"].get(d))]
+        assert not worked, f"{o.label}: Adam worked Mondays {worked}"
+    print(f"  fixed Mon off: Adam works 0 of {len(mondays)} Mondays in all options")
+
+
+def test_fixed_work_weekly_guaranteed():
+    """A line ticked 'Work weekly' works >=1 shift every week in any option."""
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Joane":
+            n.fixed_work_weekly = True
+    opts = generate_schedules(cfg)
+    op = build_operating_dates(cfg)
+    weeks = sorted({d.week_index for d in op})
+    for o in opts:
+        assert not check_contract(cfg, o), o.label
+        for wk in weeks:
+            worked = any(is_worked(o.assignments["Joane"].get(d.iso))
+                         for d in op if d.week_index == wk)
+            assert worked, f"{o.label}: Joane idle in week {wk}"
+    print(f"  work weekly: Joane works all {len(weeks)} weeks in all options")
+
+
 def test_determinism():
     cfg = default_config(_friday())
     a = generate_schedules(cfg)

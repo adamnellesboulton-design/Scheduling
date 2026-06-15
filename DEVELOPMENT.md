@@ -36,7 +36,9 @@ tests/
   `.paid_hours(meal_flag)`.
 - `Nurse(name, target_fte, target_d10, target_d5, stat_days, unavailable_dates,
   fte_tolerance, job_share_group, pref_nonconsec_sat, pref_clustered,
-  pref_off_mon, pref_off_wed, pref_off_fri)` — `.worked_d10()` =
+  pref_off_wed, pref_off_fri, fixed_off_mon, fixed_work_weekly)` —
+  `fixed_off_mon`/`fixed_work_weekly` are HARD per-line guarantees (never works a
+  Monday / never idle a whole week), enforced in all three options. `.worked_d10()` =
   `max(0, target_d10 - stat_days)`; `.target_hours(d10_paid, sat_paid)`.
   **No `seniority_rank`, no `fixed_saturdays_off`** (both removed).
 - `Config(start_date, weeks, demand, weekly_demand_override,
@@ -126,6 +128,15 @@ Variables: `x[(ni, oi)] ∈ {0,1}` for each eligible nurse × operating date.
 
 (H3 = var omission for unavailable dates; H4/H6 structural.)
 
+**Per-line fixed options (HARD, opt-in checkboxes):**
+- `fixed_off_mon` — Monday `x` vars are **omitted** for that line (same mechanism
+  as H3), so it can never be scheduled a Monday. A specific day also falls back
+  to soft coverage when `len(vars_for_day) < demand` (heavy opt-out → blank
+  Mondays, never infeasible).
+- `fixed_work_weekly` — `Σ x over each week ≥ 1` for that line (weeks with no
+  eligible day are skipped). Pre-checked: total shifts must reach the available
+  week count, else a clear message instead of infeasibility.
+
 **Soft objective** = `Σ obj_terms` (minimized). Per-profile weights in
 `OBJECTIVE_PROFILES`:
 
@@ -139,9 +150,9 @@ Always-on: `W_EXTRA=600` (weekday over-staffing), `W_THREE_OF_FOUR=1500`
 - **weekday equity** — within-FTE-class spread **and** per-nurse Mon/Wed/Fri
   balance (the latter makes equity meaningful when all FTEs differ).
 - **consistency (pattern)** — penalize week-over-week weekday changes.
-- **preferences** — off-day (penalize working it), non-consec Sat (penalize
-  back-to-back), cluster (reward off/off adjacency). `pref` weight, flat (no
-  seniority).
+- **preferences** — off-day Wed/Fri (penalize working it), non-consec Sat
+  (penalize back-to-back), cluster (reward off/off adjacency). `pref` weight, flat
+  (no seniority). Monday-off is now a HARD `fixed_off_mon`, not a soft pref.
 - **sat_spread** (global) — penalize back-to-back Saturdays for everyone.
 - **cluster_all** (global) — reward off/off adjacency for everyone.
 

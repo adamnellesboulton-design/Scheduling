@@ -331,6 +331,37 @@ def shift_count_feasibility_check(
                 f"is {sat_max}. Lower it."
             )
 
+        # A fixed Monday-off line must still hit its worked D10 target on the
+        # remaining weekdays (Tue/Wed/Thu/Fri minus any approved leave).
+        if n.fixed_off_mon:
+            wd_slots = sum(
+                1 for od in operating
+                if not od.is_saturday and od.weekday != 0
+                and od.iso not in n.unavailable_dates
+            )
+            if n.worked_d10() > wd_slots:
+                msgs.append(
+                    f"{n.name}: D10 count {n.worked_d10()} can't fit in the "
+                    f"{wd_slots} non-Monday weekdays available (Mondays off is a "
+                    "fixed guarantee). Lower the D10 count or untick Mondays off."
+                )
+
+        # A "work every week" line needs at least one shift for each week it has
+        # any eligible day -- so its total shifts must reach that many weeks.
+        if n.fixed_work_weekly:
+            weeks_avail = len({
+                od.week_index for od in operating
+                if nurse_eligible_for(n, od)
+                and not (n.fixed_off_mon and od.weekday == 0)
+            })
+            total_shifts = n.worked_d10() + n.target_d5
+            if total_shifts < weeks_avail:
+                msgs.append(
+                    f"{n.name}: only {total_shifts} shifts can't cover every one of "
+                    f"the {weeks_avail} weeks (work-every-week is a fixed guarantee). "
+                    "Raise the D10/D5 counts or untick work every week."
+                )
+
     # Job-share groups never work the same day, so a group's combined counts
     # cannot exceed the number of operating days of each type.
     n_weekday_days = sum(1 for od in operating if not od.is_saturday)
@@ -402,8 +433,13 @@ def _solve_cpsat(
     x: dict[tuple[int, int], cp_model.IntVar] = {}
     for ni, nurse in enumerate(nurses):
         for oi, od in enumerate(operating):
-            if nurse_eligible_for(nurse, od):
-                x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
+            if not nurse_eligible_for(nurse, od):
+                continue
+            # Fixed Monday-off is a HARD guarantee: omit the variable entirely so
+            # the line can never be scheduled a Monday (same mechanism as H3).
+            if nurse.fixed_off_mon and od.weekday == 0:
+                continue
+            x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
     # Statutory-holiday (ST) decision vars: the solver chooses which holidays
     # each nurse takes off (paid, not worked), up to their entitlement, spread to
@@ -443,6 +479,11 @@ def _solve_cpsat(
         vars_for_day = [x[(ni, oi)] for ni in range(len(nurses)) if (ni, oi) in x]
         assigned = sum(vars_for_day)
         can_cover = sat_can_cover if od.is_saturday else weekday_can_cover
+        # A specific day may be short even when the line totals add up — e.g. lots
+        # of fixed Monday-off lines, or many on approved leave the same day. If too
+        # few are even eligible, coverage must be soft (blanks) for that day.
+        if len(vars_for_day) < od.demand:
+            can_cover = False
         if can_cover:
             model.Add(assigned >= od.demand)  # hard: full coverage is achievable
         else:
@@ -475,6 +516,20 @@ def _solve_cpsat(
             ]
             if window_vars:
                 model.Add(sum(window_vars) <= cap)
+
+    # Fixed "work every week": a HARD guarantee the line works >= 1 shift each
+    # week (no fully-idle weeks). Weeks where the line has no eligible day (e.g.
+    # fully on approved leave) are skipped -- you can't work when you're off.
+    ois_by_week: dict[int, list[int]] = {}
+    for oi, od in enumerate(operating):
+        ois_by_week.setdefault(od.week_index, []).append(oi)
+    for ni, nurse in enumerate(nurses):
+        if not nurse.fixed_work_weekly:
+            continue
+        for wk, ois in ois_by_week.items():
+            wk_vars = [x[(ni, oi)] for oi in ois if (ni, oi) in x]
+            if wk_vars:
+                model.Add(sum(wk_vars) >= 1)
 
     # H8: job share -- lines sharing a non-empty label never work the same day
     # (two people splitting one line). At most one member of the group may be
@@ -663,7 +718,6 @@ def _solve_cpsat(
         if pw:
             # a) Off-day preferences: penalize working that weekday.
             for flag, wd in (
-                (nurse.pref_off_mon, 0),
                 (nurse.pref_off_wed, 2),
                 (nurse.pref_off_fri, 4),
             ):
