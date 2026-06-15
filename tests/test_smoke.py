@@ -46,7 +46,7 @@ def test_generate_and_validate():
     print("rule statuses:", statuses)
     # Hard-rule rows must not FAIL.
     hard = [
-        "Daily coverage (weekday >= demand, Saturday exact)",
+        "Daily coverage (blank shifts allowed when short-staffed)",
         "Max 6 consecutive scheduled days",
         "Off >=3 Saturdays per rolling 9-week window",
         "Everyone works >=1 Saturday per month",
@@ -75,17 +75,17 @@ def test_excel_output():
     print("wrote", out, os.path.getsize(out), "bytes")
 
 
-def test_infeasible_saturday_precheck():
+def test_short_staffed_leaves_blanks():
+    # Coverage is soft now: Saturday demand beyond capacity is feasible, with
+    # the unfillable Saturday shifts left blank (flagged), not an error.
     cfg = default_config(_monday())
-    # Demand far exceeds Saturday capacity.
     cfg.demand["Sat"] = 6
-    cfg.nurses = cfg.nurses[:3]
     res = generate_schedule(cfg)
-    print("infeasible test:", res.status, res.method)
-    assert not res.feasible or res.method == "greedy"
-    if not res.feasible:
-        assert res.messages, "should explain why"
-        print("  ", res.messages[0])
+    print("short-staffed test:", res.status, res.method)
+    assert res.feasible and res.method == "cp-sat"
+    rep = validate(cfg, res)
+    assert rep.unfilled_shifts > 0
+    print("  unfilled shifts:", rep.unfilled_shifts)
 
 
 if __name__ == "__main__":
@@ -95,5 +95,5 @@ if __name__ == "__main__":
     print("--- excel ---")
     test_excel_output()
     print("--- infeasible ---")
-    test_infeasible_saturday_precheck()
+    test_short_staffed_leaves_blanks()
     print("\nALL SMOKE TESTS PASSED")

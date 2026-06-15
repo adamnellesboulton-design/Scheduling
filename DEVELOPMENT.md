@@ -118,7 +118,7 @@ Variables: `x[(ni, oi)] ∈ {0,1}` for each eligible nurse × operating date.
 **Hard constraints**
 | # | Rule | Code |
 |---|------|------|
-| H1 | weekday ≥ demand (extra penalized), Saturday == demand | coverage loop + `extra_terms` |
+| H1 | coverage: **hard** (`assigned ≥ demand`) when total counts ≥ seats, else **soft** (shortfall → blank shifts); extras light soft | coverage loop, `W_SHORTFALL`/`W_EXTRA` |
 | H2 | ≤ `_sat_cap_for_span` Saturdays per rolling 9-week window | sat-window loop |
 | H8 | job-share group: ≤ 1 member per day | `js_groups` loop |
 | H9 | ≥ 1 Saturday per rolling 4-week window, per nurse | `sat_windows_4` loop |
@@ -199,6 +199,13 @@ natural rerun a button click triggers.
 - **Friday start**; weeks anchored to the start weekday.
 - **Excel is B/W**; colour only flags problems (for clean printing).
 - **Deterministic** via single worker + deterministic time limit.
+- **Coverage is conditional** — hard when the roster can cover (guarantees full
+  staffing, prunes the search), soft (blank shifts) only when short-staffed. This
+  fixed a case where a fully-soft coverage + short solve budget left avoidable
+  blanks.
+- **The 3 profiles solve in parallel** (`ThreadPoolExecutor`; OR-Tools releases
+  the GIL during `Solve`) — GO dropped ~70 s → ~18 s. Each solve is still
+  single-worker + deterministic-time, so reproducibility holds.
 - **No meal-designation toggle** — missed meals are OT (Art. 27).
 
 ---

@@ -249,22 +249,27 @@ def roster_editor():
     sat_seats = sum(o.demand for o in op if o.is_saturday)
     wd_seats = sum(o.demand for o in op if not o.is_saturday)
     notes = []
-    if sum_d5 != sat_seats:
-        notes.append(
-            f"Saturday: requested D5 total = {sum_d5} but the rotation has "
-            f"{sat_seats} Saturday seats ({total_sat} Saturdays × demand). "
-            "These must match for every line to hit its D5 count."
-        )
     if worked_d10 < wd_seats:
         notes.append(
-            f"Weekday: worked D10 total = {worked_d10} (after stat days) is below "
-            f"the {wd_seats} weekday seats needed — coverage forces some lines to "
-            "work above their target / stat days may not all be granted."
+            f"Weekday: worked-D10 total {worked_d10} is below the {wd_seats} seats "
+            f"needed — about {wd_seats - worked_d10} weekday shift(s) will be left "
+            "blank (short-staffed)."
         )
     elif worked_d10 > wd_seats:
         notes.append(
-            f"Weekday: worked D10 total = {worked_d10} exceeds {wd_seats} weekday "
-            f"seats — {worked_d10 - wd_seats} extra weekday shift(s) will be scheduled."
+            f"Weekday: worked-D10 total {worked_d10} exceeds {wd_seats} seats — "
+            f"{worked_d10 - wd_seats} extra weekday shift(s) will be scheduled."
+        )
+    if sum_d5 < sat_seats:
+        notes.append(
+            f"Saturday: D5 total {sum_d5} is below the {sat_seats} seats "
+            f"({total_sat} Saturdays × demand) — about {sat_seats - sum_d5} "
+            "Saturday shift(s) will be left blank."
+        )
+    elif sum_d5 > sat_seats:
+        notes.append(
+            f"Saturday: D5 total {sum_d5} exceeds {sat_seats} seats — "
+            f"{sum_d5 - sat_seats} extra Saturday shift(s) will be scheduled."
         )
     if notes:
         st.info("  \n".join(notes))
@@ -497,13 +502,17 @@ def _render_option(cfg: Config, opt, idx: int):
     with status_slot:
         fails = [r for r in report.rules if r.status == "FAIL"]
         warns = [r for r in report.rules if r.status == "WARN"]
+        if report.unfilled_shifts:
+            st.warning(f"{report.unfilled_shifts} shift(s) left blank — not enough "
+                       "staff to cover every day. Add staff/shifts to fill them.")
+        other_warns = [r for r in warns if not r.rule.startswith("Daily coverage")]
         if fails:
             st.error(f"{len(fails)} issue(s) to fix: "
                      + "; ".join(r.rule for r in fails))
-        elif warns:
-            st.warning(f"{len(warns)} to review: "
-                       + "; ".join(r.rule for r in warns))
-        else:
+        elif other_warns:
+            st.warning(f"{len(other_warns)} to review: "
+                       + "; ".join(r.rule for r in other_warns))
+        elif not report.unfilled_shifts:
             st.success("All checks pass — this schedule is compliant.")
 
     with grid_slot:

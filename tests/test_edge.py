@@ -44,12 +44,14 @@ def test_blank_name_rejected():
     assert not r.feasible and r.status == "CONFIG_INVALID"
 
 
-def test_demand_exceeds_staff():
+def test_demand_exceeds_staff_leaves_blanks():
+    # Coverage is soft: more demand than staff is feasible, with blank shifts.
     cfg = default_config(_friday())
-    cfg.demand = {"Mon": 99, "Wed": 1, "Fri": 1, "Sat": 1}
+    cfg.demand = {"Mon": 99, "Wed": 3, "Fri": 3, "Sat": 2}
     r = generate_schedule(cfg)
-    assert not r.feasible
-    assert any("demands" in m for m in r.messages)
+    assert r.feasible and r.method == "cp-sat"
+    rep = validate(cfg, r)
+    assert rep.unfilled_shifts > 0  # Mondays can't be fully covered
 
 
 def test_saturday_per_month_infeasible_for_big_pool():

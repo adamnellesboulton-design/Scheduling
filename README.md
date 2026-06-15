@@ -123,8 +123,9 @@ for reference. `worked_d10 = max(0, target_d10 − stat_days)` (stat days are pa
 but not worked).
 
 ### Hard constraints (always hold)
-- **H1** Coverage — weekdays **≥** demand (extras tolerated, penalized);
-  Saturday **exact**.
+- **H1** Coverage — **hard when the roster can cover** (no blanks); **soft when
+  short-staffed**, leaving the unfillable shifts **blank** (flagged) rather than
+  failing. Over-staffing is a light soft penalty.
 - **H2** ≤ 6 Saturdays in every rolling **9-week** window (25.06(E); proportional
   below 9 weeks). Note: over a longer rotation a nurse may work **more than 6**
   total (e.g. up to 12 in 18 weeks) — see `_period_max_saturdays`.
@@ -167,7 +168,8 @@ the shifts and the pre-check / validator says so.
    shift-count feasibility check (∑D5 = Saturday seats; each D5 within the
    monthly minimum and the period Saturday max; ∑worked-D10 ≥ weekday seats;
    job-share combined counts/FTE fit).
-3. **CP-SAT × 3 profiles** — one deterministic solve each.
+3. **CP-SAT × 3 profiles** — one deterministic solve each, **run in parallel**
+   (OR-Tools releases the GIL, so threads give a real ~3× speedup; GO ≈ 18 s).
 4. **Greedy fallback** — if CP-SAT finds nothing, a diagnostic names the binding
    rule and a greedy pass fills coverage best-effort (still honouring job share &
    the Saturday cap).
@@ -183,7 +185,7 @@ validation report; FAIL = red, WARN = amber), **Config** (full input snapshot).
 | Situation | Handling |
 |-----------|----------|
 | Empty / blank / duplicate roster | `CONFIG_INVALID` + live UI error |
-| Demand > available staff on a day | Pre-check with the date and counts |
+| Not enough staff to cover every day | Generates anyway; unfillable shifts left **blank**, flagged with the count and days |
 | ∑D5 ≠ Saturday seats; D5 below monthly min or above the period Saturday max | Shift-count pre-check, specific message |
 | Job share over capacity / combined FTE > 1.0 | Pre-check message |
 | ≥ 1 Saturday/month infeasible for the pool | Pre-check compares nurses to seats |

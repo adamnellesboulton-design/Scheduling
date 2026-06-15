@@ -57,6 +57,7 @@ class ValidationReport:
     rules: list = field(default_factory=list)  # list[RuleResult]
     nurse_summaries: list = field(default_factory=list)  # list[NurseSummary]
     max_consecutive_days: int = 0
+    unfilled_shifts: int = 0
 
 
 def _nurse_worked_dates(assignments: dict, name: str) -> set:
@@ -110,35 +111,34 @@ def validate(cfg: Config, result) -> ValidationReport:
     sats = saturday_dates(operating)
     n_saturdays = len(sats)
 
-    # --- Coverage (H1): weekdays >= demand (extras OK), Saturday == demand --
-    coverage_ok = True
-    bad_days = []
+    # --- Coverage (H1, soft): demand met, or shifts left blank (under-staffed)
+    short_days = []
+    total_short = total_extra = 0
     extras = []
-    total_extra = 0
     for od in operating:
-        assigned = sum(
-            1 for name in assignments if od.iso in assignments[name]
+        assigned = sum(1 for name in assignments if od.iso in assignments[name])
+        if assigned < od.demand:
+            total_short += od.demand - assigned
+            short_days.append(f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}")
+        elif assigned > od.demand:
+            total_extra += assigned - od.demand
+            extras.append(f"{od.iso} (+{assigned - od.demand})")
+    report.unfilled_shifts = total_short
+    if total_short:
+        status, detail = "WARN", (
+            f"{total_short} shift(s) left blank (not enough staff): "
+            + "; ".join(short_days)
         )
-        if od.is_saturday:
-            if assigned != od.demand:
-                coverage_ok = False
-                bad_days.append(f"{od.iso} (Sat): {assigned}/{od.demand}")
-        else:
-            if assigned < od.demand:
-                coverage_ok = False
-                bad_days.append(f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}")
-            elif assigned > od.demand:
-                total_extra += assigned - od.demand
-                extras.append(f"{od.iso} (+{assigned - od.demand})")
-    detail = "All operating days meet demand"
-    detail += f"; {total_extra} extra weekday shift(s): {', '.join(extras)}." if extras else "."
-    if not coverage_ok:
-        detail = "Demand not met / Saturday over-staffed: " + "; ".join(bad_days)
+    else:
+        status = "PASS"
+        detail = "All operating days fully staffed"
+        detail += (f"; {total_extra} extra shift(s): {', '.join(extras)}."
+                   if extras else ".")
     report.rules.append(
         RuleResult(
-            "Daily coverage (weekday >= demand, Saturday exact)",
+            "Daily coverage (blank shifts allowed when short-staffed)",
             "Operational (H1)",
-            "PASS" if coverage_ok else "FAIL",
+            status,
             detail,
         )
     )

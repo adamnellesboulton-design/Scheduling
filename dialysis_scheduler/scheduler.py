@@ -13,6 +13,8 @@ All hours are carried in integer half-hour units inside the model (9.5h -> 19,
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Optional
@@ -30,12 +32,13 @@ from .model import (
 # Soft-objective weights.
 #
 # Each line's requested SHIFT COUNTS (worked D10 + D5) are HARD constraints --
-# they are guaranteed in every option (see the per-nurse equalities and the
-# shift_count_feasibility_check). Coverage is also hard. The weights below only
-# shape the *arrangement* of those fixed counts: minimize weekday over-staffing
-# and keep low-FTE lines engaged. Seniority plays NO part in generation.
+# guaranteed in every option. COVERAGE is SOFT: if the roster can't cover every
+# day, shifts are left blank (under-staffed) rather than failing, and the gaps
+# are flagged. W_SHORTFALL dominates the arrangement weights so the solver fills
+# as many demanded slots as the fixed counts allow.
+W_SHORTFALL = 8000  # penalty per unfilled (blank) shift -- minimized first
 W_THREE_OF_FOUR = 1500  # low-FTE lines: push to work >=3 of every 4 weeks
-W_EXTRA = 600  # penalty per extra (over-demand) nurse on a weekday
+W_EXTRA = 600  # penalty per extra (over-demand) nurse on a day
 
 # Three options, each maximizing a different secondary goal. The dict gives the
 # weight of each differentiating term per profile.
@@ -78,10 +81,10 @@ SAT_PER_MONTH_WINDOW = 4
 # The deterministic time limit governs the stopping point (reproducible). The
 # wall-clock cap is a pure safety valve set well above it so it never fires on
 # normal hardware and therefore never injects nondeterminism.
-DET_TIME_LIMIT = 12.0  # deterministic time units (solution plateaus well before this)
+DET_TIME_LIMIT = 8.0  # deterministic time units (solution plateaus well before this)
 SOLVER_TIME_LIMIT_S = 90.0  # wall-clock safety cap
 RANDOM_SEED = 42
-ALT_DET_TIME = 8.0  # per-option solve budget (three options per run)
+ALT_DET_TIME = 5.0  # per-option solve budget (three options solved in parallel)
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
 SAT_MAX_PER_9WK = 6
@@ -280,28 +283,13 @@ def shift_count_feasibility_check(
     Catches the common ways exact counts conflict with coverage and the Saturday
     rules, with a clear message instead of an opaque 'infeasible'.
     """
+    # Coverage is soft now (under/over-staffing -> blanks/extras), so this only
+    # rejects per-line counts that are physically/contractually impossible.
     msgs = []
     sats = saturday_dates(operating)
-    n_saturdays = len(sats)
-    sat_seats = sum(od.demand for od in sats)
-    wd_seats = sum(od.demand for od in operating if not od.is_saturday)
-    sum_worked_d10 = sum(n.worked_d10() for n in cfg.nurses)
-    sum_d5 = sum(n.target_d5 for n in cfg.nurses)
     h9_min = _h9_min_saturdays(cfg.weeks)
     sat_max = _period_max_saturdays(cfg.weeks)  # most Saturdays one line may work
 
-    if sum_worked_d10 < wd_seats:
-        msgs.append(
-            f"Weekday shifts: the worked-D10 counts total {sum_worked_d10} but "
-            f"{wd_seats} are needed to cover weekday demand. Raise some D10 counts "
-            "or lower weekday demand."
-        )
-    if sum_d5 != sat_seats:
-        msgs.append(
-            f"Saturday shifts: the D5 counts total {sum_d5} but Saturday coverage "
-            f"needs exactly {sat_seats} ({n_saturdays} Saturdays x demand). Adjust "
-            "the D5 counts so they sum to that."
-        )
     for n in cfg.nurses:
         elig_sat = sum(1 for od in sats if od.iso not in n.unavailable_dates)
         if n.target_d5 > elig_sat:
@@ -324,6 +312,7 @@ def shift_count_feasibility_check(
     # Job-share groups never work the same day, so a group's combined counts
     # cannot exceed the number of operating days of each type.
     n_weekday_days = sum(1 for od in operating if not od.is_saturday)
+    n_saturdays = len(sats)
     js: dict[str, list] = {}
     for n in cfg.nurses:
         label = (n.job_share_group or "").strip()
@@ -394,20 +383,32 @@ def _solve_cpsat(
             if nurse_eligible_for(nurse, od):
                 x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
-    # H1: daily coverage. Saturday is exact (no extras allowed); weekdays must
-    # meet demand but may run an extra nurse, which is penalized in the
-    # objective so extras only appear where they help hit shift counts.
-    extra_terms = []
+    # H1: daily coverage. HARD when the roster's fixed counts can cover the
+    # demand (no blanks, and the constraint prunes the search); SOFT only when a
+    # shift type is genuinely short-staffed, in which case the unfillable shifts
+    # are left blank (W_SHORTFALL is minimized first). Over-staffing is always a
+    # light soft penalty.
+    total_worked_d10 = sum(n.worked_d10() for n in nurses)
+    total_d5 = sum(n.target_d5 for n in nurses)
+    wd_seats = sum(od.demand for od in operating if not od.is_saturday)
+    sat_seats = sum(od.demand for od in operating if od.is_saturday)
+    weekday_can_cover = total_worked_d10 >= wd_seats
+    sat_can_cover = total_d5 >= sat_seats
+    extra_terms, short_terms = [], []
     for oi, od in enumerate(operating):
         vars_for_day = [x[(ni, oi)] for ni in range(len(nurses)) if (ni, oi) in x]
-        if od.is_saturday:
-            model.Add(sum(vars_for_day) == od.demand)
+        assigned = sum(vars_for_day)
+        can_cover = sat_can_cover if od.is_saturday else weekday_can_cover
+        if can_cover:
+            model.Add(assigned >= od.demand)  # hard: full coverage is achievable
         else:
-            model.Add(sum(vars_for_day) >= od.demand)
-            if vars_for_day:
-                extra = model.NewIntVar(0, len(vars_for_day), f"extra_{oi}")
-                model.Add(extra == sum(vars_for_day) - od.demand)
-                extra_terms.append(extra)
+            short = model.NewIntVar(0, od.demand, f"short_{oi}")
+            model.Add(short >= od.demand - assigned)
+            short_terms.append(short)
+        if vars_for_day:
+            extra = model.NewIntVar(0, len(vars_for_day), f"extra_{oi}")
+            model.Add(extra >= assigned - od.demand)
+            extra_terms.append(extra)
 
     # H6 is structural (one var per nurse-day). H3 handled by var omission.
     # H4 is structurally impossible to violate (longest run = Fri-Sat).
@@ -470,7 +471,9 @@ def _solve_cpsat(
     # --- Soft objective terms ---------------------------------------------
     obj_terms = []
 
-    # Weekday over-staffing (extras) -- tolerated but minimized.
+    # Coverage: fill demand (minimize blanks) first, then avoid over-staffing.
+    for short in short_terms:
+        obj_terms.append(W_SHORTFALL * short)
     for extra in extra_terms:
         obj_terms.append(W_EXTRA * extra)
 
@@ -894,35 +897,39 @@ def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
 
     operating = build_operating_dates(cfg)
 
-    cov = coverage_feasibility_check(cfg, operating)
-    sat = saturday_feasibility_check(cfg, operating)
+    # Coverage / Saturday-capacity are no longer hard (shortfalls -> blank
+    # shifts), so only genuinely-impossible cases gate the solve: the
+    # everyone-gets-a-monthly-Saturday rule (H9) and per-line count limits.
     month = sat_per_month_feasibility_check(cfg, operating)
     counts = shift_count_feasibility_check(cfg, operating)
-    if not cov.ok or not sat.ok or not month.ok or not counts.ok:
+    if not month.ok or not counts.ok:
         diag = _diagnose(cfg, operating)
         return [ScheduleResult(
             feasible=False,
             method="none",
             status="PRECHECK_INFEASIBLE",
             operating=operating,
-            messages=cov.messages + sat.messages + month.messages + counts.messages,
+            messages=month.messages + counts.messages,
             binding_constraints=diag,
         )]
 
     det = DET_TIME_LIMIT if len(profiles) <= 1 else ALT_DET_TIME
-    results: list[ScheduleResult] = []
-    for i, profile in enumerate(profiles):
-        res = _solve_cpsat(cfg, operating, profile=profile, det_time=det)
-        if not res.feasible:
-            if i == 0:
-                diag = _diagnose(cfg, operating)
-                greedy = _greedy(cfg, operating)
-                greedy.binding_constraints = diag + greedy.binding_constraints
-                greedy.messages = diag + greedy.messages
-                greedy.label = "Best effort"
-                return [greedy]
-            continue  # this profile couldn't solve in budget; keep the others
-        results.append(res)
+    # Solve the profiles in parallel -- OR-Tools releases the GIL during Solve,
+    # so threads give a real ~Nx speedup while each solve stays deterministic.
+    with ThreadPoolExecutor(max_workers=min(len(profiles), os.cpu_count() or 1)) as ex:
+        raw = list(ex.map(
+            lambda p: _solve_cpsat(cfg, operating, profile=p, det_time=det),
+            profiles,
+        ))
+
+    results = [r for r in raw if r.feasible]
+    if not results:  # rare after the pre-checks -> best-effort greedy
+        diag = _diagnose(cfg, operating)
+        greedy = _greedy(cfg, operating)
+        greedy.binding_constraints = diag + greedy.binding_constraints
+        greedy.messages = diag + greedy.messages
+        greedy.label = "Best effort"
+        return [greedy]
     return results
 
 
