@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dialysis_scheduler.config import default_config, Nurse
 from dialysis_scheduler.scheduler import generate_schedules
-from dialysis_scheduler.model import build_operating_dates
+from dialysis_scheduler.model import build_operating_dates, is_worked
 
 
 def _friday(weeks_out=8):
@@ -40,7 +40,7 @@ def check_contract(cfg, opt) -> list:
 
     # H1 coverage: weekday >= demand, Saturday exact.
     for od in op:
-        assigned = sum(1 for n in cfg.nurses if od.iso in a.get(n.name, {}))
+        assigned = sum(1 for n in cfg.nurses if is_worked(a.get(n.name, {}).get(od.iso)))
         if od.is_saturday and assigned != od.demand:
             errs.append(f"Sat coverage {od.iso}: {assigned}/{od.demand}")
         if not od.is_saturday and assigned < od.demand:
@@ -48,8 +48,8 @@ def check_contract(cfg, opt) -> list:
 
     # H10 exact shift counts (worked D10 excludes stat days).
     for n in cfg.nurses:
-        d10 = sum(1 for od in op if not od.is_saturday and od.iso in a.get(n.name, {}))
-        d5 = sum(1 for od in op if od.is_saturday and od.iso in a.get(n.name, {}))
+        d10 = sum(1 for od in op if not od.is_saturday and a.get(n.name, {}).get(od.iso)=='D10')
+        d5 = sum(1 for od in op if od.is_saturday and a.get(n.name, {}).get(od.iso)=='D5')
         if d10 != n.worked_d10():
             errs.append(f"{n.name} D10 {d10}!={n.worked_d10()}")
         if d5 != n.target_d5:
@@ -63,7 +63,7 @@ def check_contract(cfg, opt) -> list:
     for n in cfg.nurses:
         for ws, we in windows9:
             c = sum(1 for wk in range(ws, we + 1)
-                    for iso in sbw.get(wk, []) if iso in a.get(n.name, {}))
+                    for iso in sbw.get(wk, []) if a.get(n.name, {}).get(iso)=='D5')
             if c > cap:
                 errs.append(f"{n.name} Saturday cap {c}>{cap} (weeks {ws}-{we})")
 
@@ -72,13 +72,13 @@ def check_contract(cfg, opt) -> list:
     for n in cfg.nurses:
         for ws, we in windows4:
             c = sum(1 for wk in range(ws, we + 1)
-                    for iso in sbw.get(wk, []) if iso in a.get(n.name, {}))
+                    for iso in sbw.get(wk, []) if a.get(n.name, {}).get(iso)=='D5')
             if c < 1:
                 errs.append(f"{n.name} 0 Saturdays in weeks {ws}-{we}")
 
     # H4: <=6 consecutive calendar days.
     for n in cfg.nurses:
-        days = sorted(date.fromisoformat(i) for i in a.get(n.name, {}))
+        days = sorted(date.fromisoformat(i) for i,c in a.get(n.name, {}).items() if is_worked(c))
         best = run = 1 if days else 0
         for p, q in zip(days, days[1:]):
             run = run + 1 if (q - p).days == 1 else 1
@@ -102,7 +102,7 @@ def check_contract(cfg, opt) -> list:
         if len(mem) < 2:
             continue
         for od in op:
-            on = [m.name for m in mem if od.iso in a.get(m.name, {})]
+            on = [m.name for m in mem if is_worked(a.get(m.name, {}).get(od.iso))]
             if len(on) > 1:
                 errs.append(f"Job share {g} same day {od.iso}: {on}")
         if sum(m.target_fte for m in mem) > 1.0 + 1e-9:
@@ -185,10 +185,12 @@ def test_unavailable_and_stat_compliant():
         assert not check_contract(cfg, o), o.label
         # Kathleen never scheduled on her unavailable Friday.
         assert cfg.start.isoformat() not in o.assignments["Kathleen"]
-        # Adam works exactly his stat-reduced count.
+        # Adam works exactly 22 worked D10 and is shown ST on 2 holiday dates.
+        adam = o.assignments["Adam"]
         d10 = sum(1 for od in build_operating_dates(cfg)
-                  if not od.is_saturday and od.iso in o.assignments["Adam"])
-        assert d10 == 22, f"{o.label} Adam D10 {d10}"
+                  if not od.is_saturday and adam.get(od.iso) == "D10")
+        st = sum(1 for c in adam.values() if c == "ST")
+        assert d10 == 22 and st == 2, f"{o.label} Adam D10 {d10} ST {st}"
     print(f"  unavailable + stat: {len(opts)} options compliant; "
           "Adam works 22/24 D10 (2 stat), Kathleen off her unavailable day")
 

@@ -200,8 +200,14 @@ natural rerun a button click triggers.
 - **Saturday max per period** = `_period_max_saturdays`, not a flat 6 — 25.06(E)
   is per rolling 9-week window, so longer rotations allow more total Saturdays.
   (Bug found by `test_compliance` on the 18-week case.)
-- **Stat days** reduce *worked* D10 (paid but not worked); only yield real time
-  off when the roster has slack.
+- **Stat days are solver-chosen decision vars** (`st[(ni, oi)]` over weekday
+  statutory-holiday dates): each nurse takes `effective_stat = min(entitlement,
+  eligible holidays)` of them as `ST` (paid, off), spread to keep coverage; ST is
+  stored in `assignments` with code `"ST"`. **Everything that counts "worked"
+  must use `model.is_worked(code)`** (D10/D5 only) — coverage, counts, Saturdays,
+  consecutive-days, swap list, Excel totals. `worked_d10_target[ni] = target_d10
+  - effective_stat`. Stat time off only materializes with roster slack; full
+  coverage is still expected on holidays (blanks otherwise).
 - **Friday start**; weeks anchored to the start weekday.
 - **Excel is B/W**; colour only flags problems (for clean printing).
 - **Deterministic** via single worker + deterministic time limit.

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from .config import Config
-from .model import OperatingDate, saturday_dates
+from .model import OperatingDate, saturday_dates, is_worked
 from .fte import scheduled_fte
 from .holidays import holidays_in_range
 from .scheduler import (
@@ -21,6 +21,8 @@ from .scheduler import (
     LOW_FTE_THRESHOLD,
     THREE_OF_FOUR_WINDOW,
     THREE_OF_FOUR_MIN_ACTIVE,
+    stat_holiday_indices,
+    effective_stat,
     _sat_window_bounds,
     _sat_cap_for_span,
 )
@@ -61,7 +63,8 @@ class ValidationReport:
 
 
 def _nurse_worked_dates(assignments: dict, name: str) -> set:
-    return set(assignments.get(name, {}).keys())
+    """Dates the nurse actually works (D10/D5) -- excludes ST (stat off) and LV."""
+    return {iso for iso, code in assignments.get(name, {}).items() if is_worked(code)}
 
 
 def _max_consecutive_calendar_days(worked_isos: set) -> int:
@@ -107,6 +110,11 @@ def validate(cfg: Config, result) -> ValidationReport:
     assignments = result.assignments
     report = ValidationReport()
 
+    # Stat days each nurse can actually take (entitlement capped at holidays);
+    # the worked-D10 target is target_d10 minus that.
+    _stat_ois = stat_holiday_indices(cfg, operating) if operating else []
+    eff_stat = {n.name: effective_stat(n, _stat_ois, operating) for n in cfg.nurses}
+
     od_by_iso = {od.iso: od for od in operating}
     sats = saturday_dates(operating)
     n_saturdays = len(sats)
@@ -116,7 +124,8 @@ def validate(cfg: Config, result) -> ValidationReport:
     total_short = total_extra = 0
     extras = []
     for od in operating:
-        assigned = sum(1 for name in assignments if od.iso in assignments[name])
+        assigned = sum(1 for name in assignments
+                       if is_worked(assignments[name].get(od.iso)))
         if assigned < od.demand:
             total_short += od.demand - assigned
             short_days.append(f"{od.iso} ({od.weekday_name}): {assigned}/{od.demand}")
@@ -269,11 +278,12 @@ def validate(cfg: Config, result) -> ValidationReport:
         worked = _nurse_worked_dates(assignments, nurse.name)
         d10 = sum(1 for i in worked if i in od_by_iso and not od_by_iso[i].is_saturday)
         d5 = sum(1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday)
-        # Worked D10 target excludes paid stat days (those reduce worked shifts).
-        wd10 = nurse.worked_d10()
+        # Worked D10 target excludes the stat days actually taken (ST off).
+        es = eff_stat[nurse.name]
+        wd10 = max(0, nurse.target_d10 - es)
         if d10 != wd10 or d5 != nurse.target_d5:
             sc_ok = False
-            stat = f" (+{nurse.stat_days} stat)" if nurse.stat_days else ""
+            stat = f" ({es} ST)" if es else ""
             sc_lines.append(
                 f"{nurse.name}: D10 {d10}/{wd10}{stat}, D5 {d5}/{nurse.target_d5}"
             )
@@ -298,7 +308,8 @@ def validate(cfg: Config, result) -> ValidationReport:
         sf = scheduled_fte(total_hours, cfg.weeks)
         # Compare against the worked-hours target (stat days are paid separately,
         # not scheduled), so honouring stat time off does not read as under-FTE.
-        worked_target_hours = nurse.worked_d10() * d10_paid + nurse.target_d5 * sat_paid
+        nm_wd10 = max(0, nurse.target_d10 - eff_stat[nurse.name])
+        worked_target_hours = nm_wd10 * d10_paid + nurse.target_d5 * sat_paid
         worked_target_fte = worked_target_hours / period_full if period_full else 0.0
         dev = sf - worked_target_fte
         line_tol = nurse.tolerance(cfg.fte_tolerance)
@@ -329,7 +340,7 @@ def validate(cfg: Config, result) -> ValidationReport:
                 saturdays_in_period=elig_sat,
                 worst_9wk_sat=worst,
                 within_tolerance=within,
-                target_d10=nurse.worked_d10(),
+                target_d10=nm_wd10,
                 scheduled_d10=n_d10,
                 target_d5=nurse.target_d5,
                 scheduled_d5=n_sat_worked,

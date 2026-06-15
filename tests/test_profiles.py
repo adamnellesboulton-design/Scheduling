@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dialysis_scheduler.config import default_config
 from dialysis_scheduler.scheduler import generate_schedules
-from dialysis_scheduler.model import build_operating_dates
+from dialysis_scheduler.model import build_operating_dates, is_worked
 
 
 def _friday(weeks_out=8):
@@ -27,7 +27,7 @@ def _by_label(opts):
 
 
 def _weekday_count(op, a, name, wd):
-    return sum(1 for d in op if d.weekday == wd and d.iso in a[name])
+    return sum(1 for d in op if d.weekday == wd and is_worked(a[name].get(d.iso)))
 
 
 def _wd_spread(cfg, op, opt):
@@ -45,14 +45,14 @@ def _off_off(cfg, op, opt):
     tot = 0
     for n in cfg.nurses:
         w = set(opt.assignments[n.name])
-        on = [1 if (start + timedelta(days=k)).isoformat() in w else 0
+        on = [1 if is_worked(opt.assignments[n.name].get((start + timedelta(days=k)).isoformat())) else 0
               for k in range(7 * cfg.weeks)]
         tot += sum(1 for k in range(len(on) - 1) if on[k] == 0 and on[k + 1] == 0)
     return tot
 
 
 def _consec_sat(op, a, name):
-    sats = sorted(d.week_index for d in op if d.is_saturday and d.iso in a[name])
+    sats = sorted(d.week_index for d in op if d.is_saturday and a[name].get(d.iso)=='D5')
     return sum(1 for x, y in zip(sats, sats[1:]) if y - x == 1)
 
 

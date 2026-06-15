@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.properties import PageSetupProperties
 
 from .config import Config
-from .model import build_operating_dates
+from .model import build_operating_dates, is_worked
 
 # Clean black-and-white output: no decorative fills, so the workbook prints
 # cleanly in B/W. Colour is reserved to FLAG ISSUES only (coverage shortfalls
@@ -164,10 +164,10 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
     for r, nurse in enumerate(cfg.nurses):
         row = first_data_row + r
         worked = assignments.get(nurse.name, {})
-        total = sum(od_by_iso[i].paid_hours for i in worked if i in od_by_iso)
-        sats = sum(
-            1 for i in worked if i in od_by_iso and od_by_iso[i].is_saturday
-        )
+        total = sum(od_by_iso[i].paid_hours for i, c in worked.items()
+                    if i in od_by_iso and is_worked(c))
+        sats = sum(1 for i, c in worked.items()
+                   if i in od_by_iso and od_by_iso[i].is_saturday and is_worked(c))
         _style_cell(ws.cell(row, summary_start, value=round(total, 1)))
         _style_cell(
             ws.cell(row, summary_start + 1, value=round(scheduled_fte(total, cfg.weeks), 3))
@@ -180,12 +180,11 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
     _style_cell(lab, FILL_HEADER, WHITE_BOLD, Alignment(horizontal="left"))
     for od in operating:
         col = col_of_iso[od.iso]
-        assigned = sum(1 for name in assignments if od.iso in assignments[name])
+        assigned = sum(1 for name in assignments
+                       if is_worked(assignments[name].get(od.iso)))
         cell = ws.cell(count_row, col, value=f"{assigned}/{od.demand}")
-        fill = FILL_SHORT if assigned != od.demand else (
-            FILL_SAT_COL if od.is_saturday else None
-        )
-        _style_cell(cell, fill, BOLD if assigned != od.demand else None)
+        fill = FILL_SHORT if assigned < od.demand else None
+        _style_cell(cell, fill, BOLD if assigned < od.demand else None)
 
     # Freeze panes: names in col A, two header rows.
     ws.freeze_panes = "B3"
@@ -199,10 +198,8 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
          None),
         ("D5 = 0730-1230 (5.0h, paid). No meal period required (26.03(A) "
          "triggers only beyond 5 consecutive hours).", None),
-        ("Blank = off.  LV = unavailable/approved leave.", None),
-        ("Statutory-holiday entitlement is a per-line count (see Summary/Config); "
-         "it reduces worked D10 shifts and is paid but not shown on the grid.",
-         None),
+        ("Blank = off.  LV = unavailable/approved leave.  ST = statutory holiday "
+         "(paid, not worked) — scheduled on the actual holiday date.", None),
         ("Meal/rest (26.03 / 26.04): D10 30-min meal must begin by 1230 "
          "(<=5.0h after start); two paid 15-min rests per D10. D5: one paid "
          "15-min rest (shift >= 4h).", None),

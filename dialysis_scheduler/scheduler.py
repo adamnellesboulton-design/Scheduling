@@ -28,6 +28,28 @@ from .model import (
     saturday_dates,
     nurse_eligible_for,
 )
+from .holidays import holidays_in_range
+
+
+def stat_holiday_indices(cfg: Config, operating: list) -> list:
+    """Indices of weekday statutory-holiday operating dates in the rotation.
+
+    (Stat days reduce worked D10, so only weekday holidays are eligible.)
+    """
+    hols = {
+        d.isoformat()
+        for d, _ in holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
+    }
+    return [oi for oi, od in enumerate(operating)
+            if not od.is_saturday and od.iso in hols]
+
+
+def effective_stat(nurse: Nurse, stat_ois: list, operating: list) -> int:
+    """Stat days a nurse can actually take = min(entitlement, eligible holidays)."""
+    unavail = set(nurse.unavailable_dates)
+    elig = sum(1 for oi in stat_ois if operating[oi].iso not in unavail)
+    return min(nurse.stat_days, elig)
+
 
 # Soft-objective weights.
 #
@@ -383,12 +405,34 @@ def _solve_cpsat(
             if nurse_eligible_for(nurse, od):
                 x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
+    # Statutory-holiday (ST) decision vars: the solver chooses which holidays
+    # each nurse takes off (paid, not worked), up to their entitlement, spread to
+    # keep coverage. st[(ni, oi)] = 1 -> nurse ni is ST (off) on holiday date oi.
+    stat_ois = stat_holiday_indices(cfg, operating)
+    st: dict[tuple[int, int], cp_model.IntVar] = {}
+    eff_stat = {}
+    for ni, nurse in enumerate(nurses):
+        elig = [oi for oi in stat_ois
+                if operating[oi].iso not in set(nurse.unavailable_dates)]
+        eff_stat[ni] = min(nurse.stat_days, len(elig))
+        for oi in elig:
+            st[(ni, oi)] = model.NewBoolVar(f"st_{ni}_{oi}")
+            if (ni, oi) in x:
+                model.Add(x[(ni, oi)] + st[(ni, oi)] <= 1)  # ST => not working
+        if elig:
+            model.Add(sum(st[(ni, oi)] for oi in elig) == eff_stat[ni])
+
+    # Worked D10 target per nurse (target minus the stat days actually taken).
+    worked_d10_target = {
+        ni: max(0, n.target_d10 - eff_stat[ni]) for ni, n in enumerate(nurses)
+    }
+
     # H1: daily coverage. HARD when the roster's fixed counts can cover the
     # demand (no blanks, and the constraint prunes the search); SOFT only when a
     # shift type is genuinely short-staffed, in which case the unfillable shifts
     # are left blank (W_SHORTFALL is minimized first). Over-staffing is always a
     # light soft penalty.
-    total_worked_d10 = sum(n.worked_d10() for n in nurses)
+    total_worked_d10 = sum(worked_d10_target.values())
     total_d5 = sum(n.target_d5 for n in nurses)
     wd_seats = sum(od.demand for od in operating if not od.is_saturday)
     sat_seats = sum(od.demand for od in operating if od.is_saturday)
@@ -491,7 +535,7 @@ def _solve_cpsat(
             for oi, od in enumerate(operating)
             if od.is_saturday and (ni, oi) in x
         )
-        model.Add(d10_actual == nurse.worked_d10())
+        model.Add(d10_actual == worked_d10_target[ni])
         model.Add(d5_actual == nurse.target_d5)
 
     # 2. Weekday equity within FTE class (balance each weekday across equals).
@@ -687,7 +731,7 @@ def _solve_cpsat(
 
     status_name = solver.StatusName(status)
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        assignments = _extract_assignments(cfg, operating, x, solver)
+        assignments = _extract_assignments(cfg, operating, x, st, solver)
         return ScheduleResult(
             feasible=True,
             method="cp-sat",
@@ -704,12 +748,15 @@ def _solve_cpsat(
     )
 
 
-def _extract_assignments(cfg, operating, x, solver) -> dict:
+def _extract_assignments(cfg, operating, x, st, solver) -> dict:
+    """Build {name: {iso: code}} where code is D10/D5 (worked) or ST (stat off)."""
     assignments: dict[str, dict[str, str]] = {n.name: {} for n in cfg.nurses}
     for ni, nurse in enumerate(cfg.nurses):
         for oi, od in enumerate(operating):
             if (ni, oi) in x and solver.Value(x[(ni, oi)]) == 1:
                 assignments[nurse.name][od.iso] = od.shift.code
+            elif (ni, oi) in st and solver.Value(st[(ni, oi)]) == 1:
+                assignments[nurse.name][od.iso] = "ST"
     return assignments
 
 

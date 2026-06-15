@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dialysis_scheduler.config import default_config, Config, Nurse
 from dialysis_scheduler.scheduler import generate_schedule, generate_schedules
+from dialysis_scheduler.model import is_worked
 from dialysis_scheduler.validator import validate
 
 
@@ -111,7 +112,7 @@ def test_job_share_never_same_day():
     assert r.feasible and r.method == "cp-sat"
     overlap = sum(
         1 for od in r.operating
-        if od.iso in r.assignments["JS_A"] and od.iso in r.assignments["JS_B"]
+        if is_worked(r.assignments['JS_A'].get(od.iso)) and is_worked(r.assignments['JS_B'].get(od.iso))
     )
     assert overlap == 0
 

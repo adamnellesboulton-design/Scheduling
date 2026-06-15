@@ -12,6 +12,13 @@ from datetime import date, timedelta
 
 from .config import Config, ShiftDef
 
+# Cell codes that count as a *worked* shift (vs "ST" stat-holiday off / "LV").
+WORK_CODES = ("D10", "D5")
+
+
+def is_worked(code) -> bool:
+    return code in WORK_CODES
+
 
 @dataclass
 class OperatingDate:

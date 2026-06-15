@@ -19,7 +19,7 @@ from dialysis_scheduler.config import (
     DEFAULT_CONFIG_PATH,
     default_config,
 )
-from dialysis_scheduler.model import build_operating_dates
+from dialysis_scheduler.model import build_operating_dates, is_worked
 from dialysis_scheduler.holidays import holidays_in_range
 from dialysis_scheduler.scheduler import generate_schedule, generate_schedules
 from dialysis_scheduler.validator import validate
@@ -430,8 +430,10 @@ def _render_option(cfg: Config, opt, idx: int):
     col_cfg = {"Nurse": st.column_config.TextColumn(
         "Nurse", disabled=True, pinned=True, width="small")}
     for od in operating:
+        # ST (statutory holiday off) is only offered on weekdays.
+        opts = ["", od.shift.code, "LV"] + ([] if od.is_saturday else ["ST"])
         col_cfg[_label(od)] = st.column_config.SelectboxColumn(
-            _label(od), options=["", od.shift.code, "LV"], width="small",
+            _label(od), options=opts, width="small",
         )
     edited = st.data_editor(
         base_df, hide_index=True, num_rows="fixed", width="stretch",
@@ -559,7 +561,7 @@ def _worked_shifts(assignments: dict, operating) -> list:
     for name, days in assignments.items():
         for iso, code in days.items():
             od = od_by_iso.get(iso)
-            if od:
+            if od and is_worked(code):  # ST/LV are not swappable shifts
                 items.append((od.d, f"{name} — {od.d.strftime('%a %d-%b')} ({code})",
                               name, iso))
     items.sort(key=lambda t: (t[0], t[1]))
@@ -578,7 +580,9 @@ def _assignments_from_grid(df: pd.DataFrame, cfg: Config, operating) -> dict:
             continue
         for lbl, od in lbl_to_od.items():
             v = str(row.get(lbl) or "").strip().upper()
-            if v and v != "LV":
+            if v == "ST":
+                assignments[name][od.iso] = "ST"
+            elif v and v != "LV":
                 assignments[name][od.iso] = od.shift.code
     return assignments
 

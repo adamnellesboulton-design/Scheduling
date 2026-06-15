@@ -157,10 +157,12 @@ schedules byte-for-byte.
 
 ### Statutory holidays (BCNU Art. 17)
 `holidays.py` computes the BC stat holidays per year. A line's **stat-shift
-entitlement** is paid time off that **reduces its worked D10 target**. Because the
-unit still runs at full demand, stat time off only materializes when the roster
-has slack (total worked targets exceed weekday seats); otherwise coverage forces
-the shifts and the pre-check / validator says so.
+entitlement** is shown on the grid as **`ST`** (paid, not worked) on the **actual
+statutory-holiday dates** in the rotation — **the solver chooses which holidays
+each nurse takes** so coverage stays balanced. Each ST day reduces that line's
+worked D10 target. Full coverage is still expected on holidays, so if too many
+take the same day off the grid shows a blank. The entitlement is capped at the
+number of (weekday) holidays in the period.
 
 ### Generation flow (`generate_schedules`)
 1. **Config integrity** — empty roster, blank/duplicate names → `CONFIG_INVALID`
