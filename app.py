@@ -401,9 +401,64 @@ def _parse_dates(raw: str) -> list[str]:
 # --- generation + results --------------------------------------------------
 
 
+# Plain-language walkthrough of the solver, surfaced in the UI for transparency.
+# The full technical spec lives in SOLVER.md; this mirrors it in order.
+SOLVER_EXPLAINER = """
+The schedule is built by a **constraint solver** (Google OR-Tools CP-SAT), not by
+hand or by luck. Here is exactly what it does, in order — nothing else affects
+the result.
+
+**Stage 1 — Sanity checks (before anything is scheduled).**
+It first rejects impossible inputs with a plain reason: empty/duplicate names,
+more Saturdays demanded than anyone can supply, or shift counts that can't fit
+the rules (e.g. a *work-weekly* line with too few D10s). If something can't work,
+you get told *why* instead of a silent failure.
+
+**Stage 2 — What it's allowed to decide.**
+One yes/no choice per nurse, per operating day: *work it or not*. Two things are
+locked out from the start so they can never happen — a nurse is never placed on a
+date they're marked **unavailable**, and a **Mon-off (fixed)** line never gets a
+Monday. Statutory holidays are handled separately: the solver picks which
+holidays each line takes off (paid, not worked).
+
+**Stage 3 — The hard rules (always true, in every option).**
+These are guaranteed before any preference is considered:
+- Each line works **exactly** its requested **D10** and **D5** counts.
+- Every day is staffed to demand **where the roster can**; a genuinely
+  uncoverable shift is left **blank and flagged**, never silently dropped.
+- **≥ 1 Saturday per month** and **≤ 6 Saturdays per 9 weeks**, for everyone.
+- **Job-share** partners never work the same day.
+- Any ticked guarantee holds: **Work weekly** (one weekday shift every Mon–Fri
+  week), **Fri before Sat**, **Mon off (fixed)**.
+
+**Stage 4 — The preferences it then optimizes (soft).**
+With the hard rules fixed, it *maximizes* a weighted scorecard — in priority
+order: **fill coverage** → keep small lines **regularly active** → honour
+**ticked preferences** → avoid **needless extra** staffing → **fairness**
+(balanced weekdays, spaced-out Saturdays) → **clustering** → a **stable** weekly
+pattern. A bigger weight wins when two goals tug against each other.
+
+**Stage 5 — Why you get three options.**
+It runs the whole solve **three times** with three different emphases —
+**Preference-**, **Equity-** and **Cluster-maximizing**. All three obey every
+hard rule and hit the exact counts; they differ **only** in *which days* fill
+those counts. Pick the trade-off you like.
+
+**A note on re-runs.** For speed the solver uses several workers at once, so
+re-running the same inputs can give a slightly different — but equally valid and
+equally count-exact — layout. Every hard rule still holds each time.
+
+*Full technical specification, including the exact weights and constraint IDs, is
+in **SOLVER.md** in the repository.*
+"""
+
+
 def generate_section():
     cfg = _cfg()
     st.header("Generate the schedule")
+
+    with st.expander("How the solver builds your schedule — step by step"):
+        st.markdown(SOLVER_EXPLAINER)
 
     # Compliance reminders, tucked away to keep the action area clean.
     lead_days = (cfg.start - date.today()).days
