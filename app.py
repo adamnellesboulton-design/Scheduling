@@ -27,7 +27,6 @@ from dialysis_scheduler.excel_export import workbook_bytes, output_filename
 
 st.set_page_config(
     page_title="Dialysis Unit Scheduler",
-    page_icon="🩺",
     layout="wide",
 )
 
@@ -105,7 +104,7 @@ def _hero():
     st.markdown(
         """
         <div class="ds-hero">
-          <h1>🩺 Pediatric Dialysis Unit Scheduler</h1>
+          <h1>Pediatric Dialysis Unit Scheduler</h1>
           <p>BC Children's Hospital · Hemodialysis · BCNU Provincial Collective
              Agreement (Art. 25–26)</p>
           <div class="ds-tags">
@@ -179,7 +178,11 @@ def sidebar():
 
     # Daily staffing demand.
     st.sidebar.subheader("Nurses needed per day")
-    st.sidebar.caption("Weekdays are a minimum (extras allowed); Saturday is exact.")
+    st.sidebar.caption(
+        "Target nurses per day. The solver staffs exactly this where the roster's "
+        "shift counts allow — adding an extra only if the counts require it, or "
+        "leaving a blank only if no one can cover."
+    )
     cols = st.sidebar.columns(4)
     for i, day in enumerate(["Mon", "Wed", "Fri", "Sat"]):
         cfg.demand[day] = int(
@@ -200,7 +203,7 @@ def sidebar():
         f"**{len(stats)}** fall in this rotation (BCNU Art. 17): "
         + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
            or "none")
-        + ". Set each line's stat-shift entitlement in the roster."
+        + ". Set each nurse's stat-day entitlement in the roster."
     )
 
 
@@ -212,15 +215,18 @@ def roster_editor():
     st.header("Nurse roster")
 
     st.caption(
-        "Set each line's number of **10-hour weekday shifts (D10)**, "
-        "**5-hour Saturday shifts (D5, ≥ 1)** and **stat shifts** over the whole "
-        "rotation (no upper cap — scale them up for longer rotations). The counts "
-        "are the primary target; stat shifts are paid statutory-holiday days "
-        "(BCNU Art. 17) shown as **ST** on the actual holiday dates. **FTE** is "
-        "derived (read-only). Preferences are honoured in the preference-maximizing "
-        "option. Same **Job share** label = two lines never work the same day. "
-        "**Everyone works Saturdays** (≥ 1 per month). Seniority is not used — "
-        "lines are picked by seniority afterward."
+        "Give each nurse their **D10** (10-hour weekday) and **D5** (5-hour "
+        "Saturday, at least 1) shift counts plus any paid **stat** days, for the "
+        "whole rotation — these exact counts are guaranteed in every option (no "
+        "upper cap; scale them up for longer rotations). Stat days are paid "
+        "statutory holidays (BCNU Art. 17), shown as **ST** on the actual holiday "
+        "date; each replaces one worked D10. **FTE** is derived from the counts "
+        "(read-only). The **hard** columns are guarantees that always hold; the "
+        "**soft** columns are preferences, honoured most in the Preference option. "
+        "Give two nurses the same **Job share** label to split one line (they "
+        "never work the same day). Everyone works at least one Saturday a month. "
+        "Seniority is not used to build the schedule — nurses pick by seniority "
+        "afterward."
     )
 
     rows = []
@@ -231,14 +237,14 @@ def roster_editor():
             "d5": int(n.target_d5),
             "stat": int(n.stat_days),
             "job_share": n.job_share_group,
-            "pref_nonconsec_sat": n.pref_nonconsec_sat,
-            "pref_clustered": n.pref_clustered,
             "fixed_off_mon": n.fixed_off_mon,
             "fixed_work_weekly": n.fixed_work_weekly,
             "fixed_fri_before_sat": n.fixed_fri_before_sat,
             "pref_off_mon": n.pref_off_mon,
             "pref_off_wed": n.pref_off_wed,
             "pref_off_fri": n.pref_off_fri,
+            "pref_nonconsec_sat": n.pref_nonconsec_sat,
+            "pref_clustered": n.pref_clustered,
             "unavailable_dates": ", ".join(n.unavailable_dates),
         })
     df = pd.DataFrame(rows)
@@ -251,62 +257,76 @@ def roster_editor():
             "name": st.column_config.TextColumn("Name", required=True),
             "d10": st.column_config.NumberColumn(
                 "D10 shifts", min_value=0, step=1,
-                help="Number of 10-hour weekday shifts over the whole rotation "
-                     "(no upper cap — scale it up for longer rotations).",
+                help="Number of D10 (10-hour weekday) shifts this nurse works over "
+                     "the whole rotation. This exact count is guaranteed in every "
+                     "option. No upper cap — scale up for longer rotations.",
             ),
             "d5": st.column_config.NumberColumn(
                 "D5 shifts", min_value=1, step=1,
-                help="Number of 5-hour Saturday shifts over the rotation "
-                     "(>= 1; no upper cap). Everyone works some Saturdays.",
+                help="Number of D5 (5-hour Saturday) shifts over the rotation (at "
+                     "least 1 — everyone works some Saturdays). This exact count is "
+                     "guaranteed in every option.",
             ),
             "stat": st.column_config.NumberColumn(
                 "Stat shifts", min_value=0, step=1,
-                help="Paid statutory-holiday days (Art. 17); each reduces worked "
-                     "D10 shifts by one. Capped at the holidays in the period.",
+                help="Paid statutory-holiday days (BCNU Art. 17). Each one the "
+                     "nurse takes replaces a worked D10 and shows as ST on the "
+                     "actual holiday date. Capped at the holidays in the period.",
             ),
             "job_share": st.column_config.SelectboxColumn(
                 "Job share", options=["", "A", "B", "C", "D"],
-                help="Put the SAME label on two lines to job-share them — "
-                     "they will never be scheduled on the same day.",
-            ),
-            "pref_nonconsec_sat": st.column_config.CheckboxColumn(
-                "Non-consec Sat", help="Prefer to avoid back-to-back Saturdays"
-            ),
-            "pref_clustered": st.column_config.CheckboxColumn(
-                "Cluster shifts",
-                help="Group worked days (e.g. Fri+Sat) for longer consecutive days off"
+                help="Give the SAME label to two nurses to split one line between "
+                     "them: they never work the same day, and their combined "
+                     "workload stays within one full-time line.",
             ),
             "fixed_off_mon": st.column_config.CheckboxColumn(
-                "Mon off (fixed)",
-                help="HARD guarantee: this line is NEVER scheduled a Monday, in "
-                     "all three options. May leave a Monday short (blank shift) if "
-                     "too many lines opt out.",
+                "Mon off — hard",
+                help="Hard guarantee (every option): this nurse is never scheduled "
+                     "on a Monday. If too many nurses opt out, a Monday may be left "
+                     "short — shown as a blank shift.",
             ),
             "fixed_work_weekly": st.column_config.CheckboxColumn(
-                "Work weekly",
-                help="HARD guarantee: this line works at least one WEEKDAY shift "
-                     "every BUSINESS week (Mon-Fri; Saturdays don't count). Needs "
-                     "enough D10 shifts to cover every week.",
+                "Work weekly — hard",
+                help="Hard guarantee (every option): this nurse works at least one "
+                     "D10 (weekday) shift in every Monday–Friday business week. "
+                     "Needs enough D10 shifts to reach every week.",
             ),
             "fixed_fri_before_sat": st.column_config.CheckboxColumn(
-                "Fri before Sat",
-                help="HARD guarantee: whenever this line works a Saturday, it also "
-                     "works the preceding Friday. Needs D10 >= D5.",
+                "Fri before Sat — hard",
+                help="Hard guarantee (every option): whenever this nurse works a "
+                     "Saturday, they also work that week's Friday. Needs D10 ≥ D5.",
             ),
             "pref_off_mon": st.column_config.CheckboxColumn(
-                "Off Mon (soft)",
-                help="SOFT preference: try to keep Mondays off (honoured in the "
-                     "preference-maximizing option). Different from 'Mon off "
-                     "(fixed)', which NEVER schedules a Monday in any option.",
+                "Mon off — soft",
+                help="Soft preference: try to keep this nurse's Mondays free. "
+                     "Honoured most in the Preference option. For a never-Mondays "
+                     "rule instead, use 'Mon off — hard'.",
             ),
             "pref_off_wed": st.column_config.CheckboxColumn(
-                "Off Wed", help="Prefer Wednesdays off"
+                "Wed off — soft",
+                help="Soft preference: try to keep this nurse's Wednesdays free. "
+                     "Honoured most in the Preference option.",
             ),
             "pref_off_fri": st.column_config.CheckboxColumn(
-                "Off Fri", help="Prefer Fridays off"
+                "Fri off — soft",
+                help="Soft preference: try to keep this nurse's Fridays free. "
+                     "Honoured most in the Preference option.",
+            ),
+            "pref_nonconsec_sat": st.column_config.CheckboxColumn(
+                "Spread Saturdays — soft",
+                help="Soft preference: avoid scheduling this nurse on back-to-back "
+                     "Saturdays. Honoured most in the Preference option.",
+            ),
+            "pref_clustered": st.column_config.CheckboxColumn(
+                "Cluster shifts — soft",
+                help="Soft preference: group this nurse's worked days (e.g. "
+                     "Fri+Sat) so their days off come in longer blocks. Honoured "
+                     "most in the Preference option.",
             ),
             "unavailable_dates": st.column_config.TextColumn(
-                "Unavailable dates", help="comma-separated YYYY-MM-DD (approved leave)"
+                "Unavailable dates",
+                help="Approved leave / unavailable dates, comma-separated "
+                     "YYYY-MM-DD. The nurse is never scheduled on these (hard).",
             ),
         },
         key="roster_editor",
@@ -402,54 +422,61 @@ def _parse_dates(raw: str) -> list[str]:
 
 
 # Plain-language walkthrough of the solver, surfaced in the UI for transparency.
-# The full technical spec lives in SOLVER.md; this mirrors it in order.
+# The full technical spec lives in SOLVER.md; this mirrors it. Kept accurate to
+# the actual model: the three options share one hard layer and differ only in
+# which soft goal is weighted up (NOT a single fixed priority order).
 SOLVER_EXPLAINER = """
-The schedule is built by a **constraint solver** (Google OR-Tools CP-SAT), not by
-hand or by luck. Here is exactly what it does, in order — nothing else affects
-the result.
+The schedule is produced by a **constraint solver** (Google OR-Tools CP-SAT). It
+works in **two layers**, and knowing them lets you explain any cell in the grid.
 
-**Stage 1 — Sanity checks (before anything is scheduled).**
-It first rejects impossible inputs with a plain reason: empty/duplicate names,
-more Saturdays demanded than anyone can supply, or shift counts that can't fit
-the rules (e.g. a *work-weekly* line with too few D10s). If something can't work,
-you get told *why* instead of a silent failure.
+**Layer 1 — the fixed schedule (identical in all three options).**
+These rules always hold, and together they already pin down most of the grid:
 
-**Stage 2 — What it's allowed to decide.**
-One yes/no choice per nurse, per operating day: *work it or not*. Two things are
-locked out from the start so they can never happen — a nurse is never placed on a
-date they're marked **unavailable**, and a **Mon-off (fixed)** line never gets a
-Monday. Statutory holidays are handled separately: the solver picks which
-holidays each line takes off (paid, not worked).
-
-**Stage 3 — The hard rules (always true, in every option).**
-These are guaranteed before any preference is considered:
-- Each line works **exactly** its requested **D10** and **D5** counts.
-- Every day is staffed to demand **where the roster can**; a genuinely
-  uncoverable shift is left **blank and flagged**, never silently dropped.
-- **≥ 1 Saturday per month** and **≤ 6 Saturdays per 9 weeks**, for everyone.
+- Every nurse works **exactly** their **D10** (10-hour weekday) and **D5**
+  (5-hour Saturday) counts — no more, no fewer.
+- Each operating day is staffed to its required number **wherever the roster
+  can**. A shift nobody can legally cover is left **blank and flagged**, never
+  dropped silently.
+- **Saturdays:** everyone works **at least one every four weeks** and **no more
+  than six in any nine** (a weekend off in three).
 - **Job-share** partners never work the same day.
-- Any ticked guarantee holds: **Work weekly** (one weekday shift every Mon–Fri
-  week), **Fri before Sat**, **Mon off (fixed)**.
+- No nurse is scheduled on a date marked **unavailable**.
+- Any per-nurse **hard** guarantee you ticked — *Mon off*, *Work weekly* (one
+  weekday shift every Monday–Friday week), *Fri before Sat* — is enforced here.
 
-**Stage 4 — The preferences it then optimizes (soft).**
-With the hard rules fixed, it *maximizes* a weighted scorecard — in priority
-order: **fill coverage** → keep small lines **regularly active** → honour
-**ticked preferences** → avoid **needless extra** staffing → **fairness**
-(balanced weekdays, spaced-out Saturdays) → **clustering** → a **stable** weekly
-pattern. A bigger weight wins when two goals tug against each other.
+**Layer 2 — the arrangement (the only thing that differs between options).**
+Once Layer 1 is satisfied, each nurse's counts still have to land on *specific*
+days, and there are usually many legal ways to place them. The solver scores
+every candidate schedule and keeps the best. Two scoring rules are applied **the
+same way in all three options**: fill every coverable shift first, and keep small
+(low-FTE) nurses working in **at least three of every four weeks**. After that,
+**each option weights up one goal** — which is what makes the three results
+genuinely different:
 
-**Stage 5 — Why you get three options.**
-It runs the whole solve **three times** with three different emphases —
-**Preference-**, **Equity-** and **Cluster-maximizing**. All three obey every
-hard rule and hit the exact counts; they differ **only** in *which days* fill
-those counts. Pick the trade-off you like.
+- **Preference** — rewards honouring the **preferences ticked in the roster**
+  (soft off-days, spread-out Saturdays, clustered shifts). Ticked preferences are
+  satisfied wherever the counts allow; balance between nurses comes second.
+- **Equity** — rewards **fairness**: each nurse gets an even mix of Mondays /
+  Wednesdays / Fridays, and their Saturdays are spaced evenly through the
+  rotation. No one is stuck on a single weekday or back-to-back Saturdays;
+  individual preferences come second.
+- **Cluster** — rewards **grouping** each nurse's worked days so their days off
+  fall in longer blocks (e.g. more Fri+Sat pairings). Fairness and individual
+  preferences come second.
 
-**A note on re-runs.** For speed the solver uses several workers at once, so
-re-running the same inputs can give a slightly different — but equally valid and
-equally count-exact — layout. Every hard rule still holds each time.
+A gentle pull toward a **repeating weekly pattern** applies in every option, so
+rotations stay predictable.
 
-*Full technical specification, including the exact weights and constraint IDs, is
-in **SOLVER.md** in the repository.*
+**So, why does a result look the way it does?** Layer 1 explains most cells — the
+counts had to land somewhere and the hard rules ruled out the rest — and the
+option's emphasised goal explains how the remaining freedom was spent.
+
+**Re-runs.** For speed the solver uses several CPU workers at once, so re-running
+the same inputs can give a slightly different — but equally compliant and equally
+count-exact — layout. Every Layer 1 guarantee holds every time.
+
+*Full technical specification, with the exact scoring weights and contract
+citations, is in **SOLVER.md**.*
 """
 
 
@@ -479,9 +506,10 @@ def generate_section():
         )
 
     st.caption(
-        "Nothing is scheduled until you press **GO** — three options "
-        "(**preference-**, **equity-** and **cluster-maximizing**) are produced "
-        "from the parameters and roster above."
+        "Nothing is scheduled until you press **Generate** — three options "
+        "(**Preference**, **Equity** and **Cluster**) are produced from the "
+        "parameters and roster above. Same counts and rules in each; only the "
+        "arrangement differs."
     )
     if st.button("Generate three options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
@@ -508,7 +536,8 @@ def generate_section():
 
     options = st.session_state.get("options")
     if not options:
-        st.info("Configure the parameters and roster above, then press **GO**.")
+        st.info("Configure the parameters and roster above, then press "
+                "**Generate three options**.")
         return
 
     first = options[0]
@@ -545,23 +574,28 @@ def generate_section():
 
 
 PROFILE_DESC = {
-    "Preference-maximizing": "Arranges each nurse's required shifts to best "
-        "satisfy the preferences ticked in the roster (off-days, non-consecutive "
-        "Saturdays, clustered shifts).",
-    "Equity-maximizing": "Spreads the work fairly — each nurse gets a balanced "
-        "mix of Mondays / Wednesdays / Fridays and their Saturdays are evenly "
-        "spaced through the rotation.",
-    "Cluster-maximizing": "Groups each nurse's shifts together so their days off "
-        "come in longer continuous blocks.",
+    "Preference-maximizing": "Places each nurse's required shifts to best satisfy "
+        "the soft preferences ticked in the roster (off-days, spread-out "
+        "Saturdays, clustered shifts). Balance between nurses comes second.",
+    "Equity-maximizing": "Balances the work — each nurse gets an even mix of "
+        "Mondays / Wednesdays / Fridays and their Saturdays are spaced evenly "
+        "through the rotation. Individual preferences come second.",
+    "Cluster-maximizing": "Groups each nurse's worked days so their days off fall "
+        "in longer continuous blocks (e.g. more Fri+Sat pairings). Fairness and "
+        "preferences come second.",
 }
 GUARANTEES = (
-    "Guaranteed in **every** option, before any preference is considered:\n\n"
+    "Guaranteed in **every** option, before any preference is weighed:\n\n"
     "- Each nurse works **exactly** their requested D10 / D5 counts.\n"
     "- Every operating day is staffed up to the available roster; any genuinely "
-    "uncoverable shifts are left blank and flagged (never silently dropped).\n"
-    "- Everyone works **≥ 1 Saturday per month** and **≤ 6 in any 9 weeks**.\n"
-    "- Job-share partners never share a day; their combined FTE is ≤ 1.0.\n"
-    "- No one is scheduled on a date they're marked unavailable.\n\n"
+    "uncoverable shift is left blank and flagged (never silently dropped).\n"
+    "- Everyone works **at least 1 Saturday every 4 weeks** and **at most 6 in "
+    "any 9 weeks**.\n"
+    "- Job-share partners never work the same day; their combined workload stays "
+    "within one full-time line.\n"
+    "- No nurse is scheduled on a date marked unavailable.\n"
+    "- Every per-nurse **hard** guarantee ticked in the roster (Mon off, Work "
+    "weekly, Fri before Sat) holds.\n\n"
     "The three options differ **only** in how those fixed shifts are arranged "
     "across the calendar — never in how many each nurse works."
 )
@@ -872,17 +906,19 @@ def main():
     _hero()
     with st.expander("How this works", expanded=False):
         st.markdown(
-            "- The unit runs **Fri / Sat / Mon / Wed** each week (rotation starts "
-            "Friday). Saturdays are **D5** (5 h); weekdays are **D10** (10 h).\n"
+            "- The unit runs **Fri / Sat / Mon / Wed** each week (the rotation "
+            "starts on a Friday). Weekdays are **D10** (10-hour) shifts; Saturdays "
+            "are **D5** (5-hour) shifts.\n"
             "- In the **roster**, give each nurse their **D10**, **D5** and "
-            "**stat-shift** counts. The generator hits those counts while keeping "
-            "the schedule compliant.\n"
-            "- Press **GO** for **three options** — preference-, equity- and "
-            "cluster-maximizing. Open a tab, review the status banner, optionally "
-            "**edit** the grid by hand, then **download** the Excel.\n"
-            "- Seniority isn't used to build the schedule — lines are picked by "
+            "**stat** counts. The generator hits those exact counts while keeping "
+            "every contract rule.\n"
+            "- Press **Generate three options** for **Preference**, **Equity** and "
+            "**Cluster** schedules — same counts and rules, different arrangement. "
+            "Open a tab, review the status banner, optionally **edit** the grid by "
+            "hand, then **download** the Excel.\n"
+            "- Seniority isn't used to build the schedule — nurses pick by "
             "seniority afterward.\n"
-            "- The Excel prints clean in black-and-white; colour flags only "
+            "- The Excel prints clean in black-and-white; colour only flags "
             "problems."
         )
     sidebar()

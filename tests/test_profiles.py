@@ -57,16 +57,19 @@ def _consec_sat(op, a, name):
 
 
 def test_preference_option_honours_off_day():
+    # Use Kaitlyn (12 D10): she has slack to avoid Fridays (fill from Mon/Wed).
+    # A saturated nurse like Adam (31 of 36 weekday slots) is forced onto Fridays
+    # regardless, so the off-Friday preference can't move them — not a useful probe.
     cfg = default_config(_friday())
     for n in cfg.nurses:
-        if n.name == "Adam":
+        if n.name == "Kaitlyn":
             n.pref_off_fri = True
     opts = _by_label(generate_schedules(cfg))
     op = build_operating_dates(cfg)
-    pref_fri = _weekday_count(op, opts["Preference"].assignments, "Adam", 4)
-    clus_fri = _weekday_count(op, opts["Cluster"].assignments, "Adam", 4)
-    print(f"  Adam Fridays — preference={pref_fri}, cluster={clus_fri}")
-    assert pref_fri < clus_fri, "preference option should reduce Adam's Fridays"
+    pref_fri = _weekday_count(op, opts["Preference"].assignments, "Kaitlyn", 4)
+    clus_fri = _weekday_count(op, opts["Cluster"].assignments, "Kaitlyn", 4)
+    print(f"  Kaitlyn Fridays — preference={pref_fri}, cluster={clus_fri}")
+    assert pref_fri < clus_fri, "preference option should reduce Kaitlyn's Fridays"
     assert pref_fri == 0, "with slack, the off-Friday wish should be fully met"
 
 

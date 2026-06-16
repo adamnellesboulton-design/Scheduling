@@ -335,22 +335,23 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     r += 1
     for nurse in cfg.nurses:
         prefs = []
-        if nurse.pref_nonconsec_sat:
-            prefs.append("non-consec Sat")
-        if nurse.pref_clustered:
-            prefs.append("cluster shifts")
+        # Hard guarantees first, then soft preferences (matches the roster editor).
         if nurse.fixed_off_mon:
-            prefs.append("Mon off (fixed)")
+            prefs.append("Mon off (hard)")
         if nurse.fixed_work_weekly:
-            prefs.append("work weekly")
+            prefs.append("work weekly (hard)")
         if nurse.fixed_fri_before_sat:
-            prefs.append("Fri before Sat")
+            prefs.append("Fri before Sat (hard)")
         if nurse.pref_off_mon:
-            prefs.append("off Mon (soft)")
+            prefs.append("Mon off (soft)")
         if nurse.pref_off_wed:
-            prefs.append("off Wed")
+            prefs.append("Wed off (soft)")
         if nurse.pref_off_fri:
-            prefs.append("off Fri")
+            prefs.append("Fri off (soft)")
+        if nurse.pref_nonconsec_sat:
+            prefs.append("spread Saturdays (soft)")
+        if nurse.pref_clustered:
+            prefs.append("cluster shifts (soft)")
         ws.cell(r, 1, value=nurse.name)
         ws.cell(r, 2, value=nurse.target_d10)
         ws.cell(r, 3, value=nurse.target_d5)

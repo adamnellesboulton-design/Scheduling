@@ -8,6 +8,12 @@ print-ready Excel workbooks. It's built to grow into a hospital-wide system.
 > **Resuming this project?** Jump to [Project status & where to pick up](#project-status--where-to-pick-up),
 > and see [`DEVELOPMENT.md`](DEVELOPMENT.md) for the code-level developer map
 > (function index, the CP-SAT model, decision log, debugging recipes).
+>
+> **How does the scheduler decide?** [`SOLVER.md`](SOLVER.md) is the authoritative,
+> read-top-to-bottom walkthrough of the algorithm — the hard layer, the soft
+> objective and its weights, why the three options differ, and a
+> contract-compliance mapping. The same walkthrough is surfaced in the app under
+> *"How the solver builds your schedule"*.
 
 ---
 
@@ -57,35 +63,39 @@ python tests/test_profiles.py     # the three options each do their job
 ## How you use it
 
 1. **Sidebar** — start date (must be a Friday), rotation length (6–52 wk,
-   default 12), and **nurses needed per day** (weekday is a minimum, Saturday is
-   exact; default 3/3/3/2). Statutory holidays in the period are listed for
-   reference. Load/save config as JSON.
-2. **Roster table** — one row per nurse:
+   default 12), and **nurses needed per day** (the solver staffs exactly this
+   where the counts allow; default 3/3/3/2). Statutory holidays in the period are
+   listed for reference. Load/save config as JSON.
+2. **Roster table** — one row per nurse. Columns are grouped: counts, then the
+   **hard** guarantees, then the **soft** preferences.
    - **D10**, **D5** (≥ 1), **Stat** shift counts over the rotation (no upper
-     cap — scale them up for longer rotations). These counts are the **hard
-     target**. Stat shifts are paid statutory-holiday days that reduce worked
-     D10. **Everyone works Saturdays** (D5 ≥ 1).
-   - **Job share** label — two lines with the same label never work the same day
-     (two part-timers splitting **one** full-time line; combined FTE ≤ 1.0).
-   - **Preferences** (tick boxes) — non-consecutive Saturdays, clustered shifts,
-     off **Mon**/Wed/Fri. Honoured most in the preference option. (Off Mon here
-     is the *soft* preference — distinct from the hard **Mon off (fixed)** below.)
-   - **Fixed guarantees** (tick boxes, HARD in all three options) — **Mon off
-     (fixed)** (line never works a Monday), **Work weekly** (line works at least
-     one *weekday* shift every **business week**, Mon–Fri; Saturdays don't count),
-     and **Fri before Sat** (whenever the line works a Saturday it also works the
-     preceding Friday). These are enforced, not just preferred. The business week
-     wraps cyclically across the rotation seam, so a line never ends up with two
+     cap — scale them up for longer rotations). These exact counts are guaranteed
+     in every option. Stat days are paid statutory holidays that replace a worked
+     D10. Everyone works at least one Saturday a month (D5 ≥ 1).
+   - **Job share** label — two nurses with the same label split **one** full-time
+     line: they never work the same day, combined workload ≤ 1.0 FTE.
+   - **Hard guarantees** (tick boxes, enforced in all three options): **Mon off —
+     hard** (never works a Monday), **Work weekly — hard** (≥ 1 weekday shift
+     every Monday–Friday business week; Saturdays don't count), **Fri before Sat —
+     hard** (every worked Saturday is preceded by its Friday). The business week
+     wraps cyclically across the rotation seam, so a nurse never ends up with two
      shifts at one end of the period and none at the other.
-   - **Unavailable dates** — comma-separated `YYYY-MM-DD`.
-   - **Seniority is not used** — lines are picked by seniority *after*
-     generation, so it's left out of the build.
-3. **GO** — produces **three options** in tabs:
-   - **Preference-maximizing** — best satisfies the ticked preferences.
-   - **Equity-maximizing** — each nurse gets a fair mix of Mon/Wed/Fri and their
-     Saturdays are evenly spaced.
-   - **Cluster-maximizing** — groups each nurse's shifts so days off come in
-     longer continuous blocks.
+   - **Soft preferences** (tick boxes, honoured most in the Preference option):
+     **Mon/Wed/Fri off — soft**, **Spread Saturdays — soft** (avoid back-to-back),
+     **Cluster shifts — soft** (group worked days for longer blocks off). *Mon off
+     — soft* is the preference; *Mon off — hard* above is the never-Monday rule.
+   - **Unavailable dates** — comma-separated `YYYY-MM-DD` (hard; approved leave).
+   - **Seniority is not used** to build the schedule — nurses pick by seniority
+     *afterward*.
+3. **Generate three options** — produces three schedules in tabs. All three hit
+   the exact counts and obey every hard rule; they differ only in how the
+   remaining freedom is spent:
+   - **Preference** — best satisfies the ticked soft preferences; balance between
+     nurses comes second.
+   - **Equity** — each nurse gets an even mix of Mon/Wed/Fri and evenly-spaced
+     Saturdays; individual preferences come second.
+   - **Cluster** — groups each nurse's shifts so days off come in longer blocks;
+     fairness and preferences come second.
 
    Each tab has a **"How this schedule was built"** explainer, the schedule grid,
    a per-nurse summary, the compliance report, an **Adjust** panel (see below),
@@ -102,7 +112,7 @@ python tests/test_profiles.py     # the three options each do their job
 
 Everything **re-validates live** — the status banner and compliance report update
 instantly, and the download reflects the edits. Edits live in a session working
-copy; pressing GO again starts fresh.
+copy; pressing **Generate** again starts fresh.
 
 ---
 
@@ -127,7 +137,7 @@ config  →  model (operating dates)  →  scheduler (CP-SAT × 3 profiles)  →
 | `app.py` | Streamlit UI |
 
 ### FTE & counts
-`weekly_full_time_hours = 37.5` (Art. 26.01). Each line's **shift counts** are
+`weekly_full_time_hours = 37.5` (Art. 26.01). Each nurse's **shift counts** are
 the target; the derived FTE is `(D10 × 9.5 + D5 × 5.0) / (37.5 × weeks)`, shown
 for reference. `worked_d10 = max(0, target_d10 − stat_days)` (stat days are paid
 but not worked).
@@ -142,10 +152,10 @@ but not worked).
 - **H3** No assignment on a nurse's unavailable dates.
 - **H4** ≤ 6 consecutive calendar days (structurally ≤ 2 here; asserted anyway).
 - **H6** One shift per nurse per day.
-- **H8** Job-share lines never work the same day; combined FTE ≤ 1.0.
+- **H8** Job-share nurses never work the same day; combined FTE ≤ 1.0.
 - **H9** **Everyone** works **≥ 1 Saturday per rolling 4-week window**
   ("≥ 1 Saturday/month") — no Saturday waiver.
-- **H10** Each line works **exactly** its requested worked-D10 / D5 counts.
+- **H10** Each nurse works **exactly** their requested worked-D10 / D5 counts.
   Guaranteed in every option; the profiles only change *which* days fill the
   counts.
 
@@ -155,21 +165,21 @@ the secondary goal they push (weights in `OBJECTIVE_PROFILES`):
 
 | Option | Pushes |
 |--------|--------|
-| Preference-maximizing | ticked line preferences (off-days, non-consec Sat, cluster) |
-| Equity-maximizing | per-nurse weekday-type balance + evenly-spaced Saturdays |
-| Cluster-maximizing | global off/off adjacency → long days-off blocks |
+| Preference | ticked nurse preferences (off-days, spread Saturdays, cluster) |
+| Equity | per-nurse weekday-type balance + evenly-spaced Saturdays |
+| Cluster | global off/off adjacency for longer days-off blocks |
 
 Each profile is solved independently with a **multi-worker portfolio** (CP-SAT's
-LNS workers) under a short wall-clock budget — about **3× faster** than the old
-single-worker solve and with **better-optimized** schedules. Re-running the same
+LNS workers) under a per-option wall-clock budget, with **better-optimized**
+schedules than a single-worker solve. Re-running the same
 inputs may produce slightly different schedules, but every option is always
 feasible, contract-compliant and hits the exact requested shift counts.
 
 ### Statutory holidays (BCNU Art. 17)
-`holidays.py` computes the BC stat holidays per year. A line's **stat-shift
+`holidays.py` computes the BC stat holidays per year. A nurse's **stat-shift
 entitlement** is shown on the grid as **`ST`** (paid, not worked) on the **actual
 statutory-holiday dates** in the rotation — **the solver chooses which holidays
-each nurse takes** so coverage stays balanced. Each ST day reduces that line's
+each nurse takes** so coverage stays balanced. Each ST day reduces that nurse's
 worked D10 target. Full coverage is still expected on holidays, so if too many
 take the same day off the grid shows a blank. The entitlement is capped at the
 number of (weekday) holidays in the period.
@@ -177,17 +187,17 @@ number of (weekday) holidays in the period.
 ### Generation flow (`generate_schedules`)
 1. **Config integrity** — empty roster, blank/duplicate names → `CONFIG_INVALID`
    (names key the assignments, so duplicates are rejected).
-2. **Pre-checks** (clear messages, no solve): per-day capacity (job-share lines
+2. **Pre-checks** (clear messages, no solve): per-day capacity (job-share nurses
    count once), the 25.06(E) Saturday cap, ≥ 1-Saturday-per-month seats, and the
    shift-count feasibility check (∑D5 = Saturday seats; each D5 within the
    monthly minimum and the period Saturday max; ∑worked-D10 ≥ weekday seats;
    job-share combined counts/FTE fit).
 3. **CP-SAT × 3 profiles** — each solved with a **multi-worker portfolio** under a
    short wall-clock budget, **sequentially** (one solve already saturates the
-   cores). GO ≈ 7–8 s.
+   cores). Generate ≈ 12 s for three options.
 4. **Greedy fallback** — if CP-SAT finds nothing, a diagnostic names the binding
    rule and a greedy pass fills coverage best-effort (still honouring job share,
-   the Saturday cap, and the per-line fixed guarantees).
+   the Saturday cap, and the per-nurse hard guarantees).
 
 ### Excel output (plain black-and-white)
 `dialysis_schedule_<start>_<end>_<Option>.xlsx`, landscape + fit-to-width, with a

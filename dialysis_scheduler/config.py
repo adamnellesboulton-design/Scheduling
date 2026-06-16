@@ -230,16 +230,17 @@ def default_operating_shifts() -> list[ShiftDef]:
 def default_nurses() -> list[Nurse]:
     """The unit roster, pre-populated for the app (display order only).
 
-    Shift-count targets are sized to match the default demand over 12 weeks
-    (Mon/Wed/Fri = 3 -> 108 D10 shifts; Sat = 2 -> 24 D5 shifts) so the default
-    schedule needs no extra coverage. (FTE is derived from the counts.)
+    Shift-count targets reflect the current unit roster over a 12-week rotation.
+    Worked D10 total = 109 (vs 108 weekday seats at demand 3 on Mon/Wed/Fri, so
+    one weekday carries a single extra), and D5 total = 24 (= 24 Saturday seats
+    at demand 2). FTE is derived from the counts.
     """
     return [
-        Nurse("Kathleen", target_d10=24, target_d5=6),
-        Nurse("Adam", target_d10=24, target_d5=5),
-        Nurse("Joane", target_d10=21, target_d5=5),
-        Nurse("Leslie", target_d10=21, target_d5=4),
-        Nurse("Kaitlyn", target_d10=18, target_d5=4),
+        Nurse("Kathleen", target_d10=17, target_d5=3),
+        Nurse("Adam", target_d10=31, target_d5=7),
+        Nurse("Joane", target_d10=31, target_d5=7),
+        Nurse("Leslie", target_d10=18, target_d5=3),
+        Nurse("Kaitlyn", target_d10=12, target_d5=4),
     ]
 
 

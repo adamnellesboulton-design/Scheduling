@@ -7,6 +7,11 @@ user/overview doc; this is the map for changing the code. Read the README's
 Branch: `claude/blissful-hypatia-abtscx` · Python 3.11 · Streamlit · OR-Tools
 CP-SAT · openpyxl. No database (JSON config). Four test suites, all green.
 
+For the algorithm itself — the ordered hard/soft layers, the exact objective
+weights, why the three options differ, and the **BCNU contract-compliance
+mapping** (what is contract vs unit policy vs interpretation) — see
+[`SOLVER.md`](SOLVER.md). This file is the code map; `SOLVER.md` is the spec.
+
 ---
 
 ## 1. Repo map & key functions
@@ -209,7 +214,7 @@ Each render flushes the editor's cells back into `work[idx]` via
 **Swap guards** (`_swap_error`): different nurses, different days, both shifts
 still present, **same shift type** (so counts are preserved), neither already
 working the other's day; the caller also blocks swapping onto an unavailable
-date. Pressing **GO** clears `work` + swap/edit widget keys.
+date. Pressing **Generate** clears `work` + swap/edit widget keys.
 
 Gotcha: avoid `st.rerun()` inside a tab (resets the active tab); rely on the
 natural rerun a button click triggers.
@@ -250,9 +255,11 @@ natural rerun a button click triggers.
   fixed a case where a fully-soft coverage + short solve budget left avoidable
   blanks.
 - **The 3 profiles solve sequentially**, each with an 8-worker portfolio under a
-  wall-clock budget — GO ≈ 7–8 s (was ~18 s single-worker). Earlier this was
-  thread-per-profile single-worker; multi-worker per solve already saturates the
-  cores, so parallel profiles would only oversubscribe.
+  wall-clock budget (`PER_OPTION_SECONDS = 4.0`) — Generate ≈ 12 s for three
+  options. Earlier this was thread-per-profile single-worker; multi-worker per
+  solve already saturates the cores, so parallel profiles would only oversubscribe.
+  The cap is an upper bound (early exit on proven OPTIMAL); the extra headroom over
+  the old 2.5 s mainly polishes the cluster option and larger/constrained rosters.
 - **No meal-designation toggle** — missed meals are OT (Art. 27).
 
 ---
@@ -277,7 +284,7 @@ dict); a `test_profiles.py` behaviour check.
 equal. If it ever differs, suspect a wall-clock stop or `num_search_workers > 1`.
 
 **Common pitfalls**
-- Counts hard ⇒ adding stat days / unavailability without roster slack makes it
+- Counts hard, so adding stat days / unavailability without roster slack makes it
   infeasible (correct — the pre-check explains). Tests must use feasible configs.
 - `test_compliance` is slow; it solves 4 period lengths × 3 profiles.
 - Assignments are keyed by **name**; duplicate names are rejected up front.

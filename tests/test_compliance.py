@@ -200,10 +200,15 @@ def test_unavailable_and_stat_compliant():
 
 
 def test_fixed_off_mon_guaranteed():
-    """A line ticked 'Mon off (fixed)' never works a Monday in any option."""
+    """A nurse ticked 'Mon off (hard)' never works a Monday in any option.
+
+    Uses Kathleen (17 D10): low enough to fit in the non-Monday weekdays. A
+    high-count nurse (e.g. Adam at 31) genuinely can't be Mon-off — 31 D10 won't
+    fit in the 24 Wed/Fri slots — and the pre-check correctly rejects that.
+    """
     cfg = default_config(_friday())
     for n in cfg.nurses:
-        if n.name == "Adam":
+        if n.name == "Kathleen":
             n.fixed_off_mon = True
     opts = generate_schedules(cfg)
     op = build_operating_dates(cfg)
@@ -211,9 +216,9 @@ def test_fixed_off_mon_guaranteed():
     for o in opts:
         assert opts[0].feasible
         assert not check_contract(cfg, o), o.label
-        worked = [d for d in mondays if is_worked(o.assignments["Adam"].get(d))]
-        assert not worked, f"{o.label}: Adam worked Mondays {worked}"
-    print(f"  fixed Mon off: Adam works 0 of {len(mondays)} Mondays in all options")
+        worked = [d for d in mondays if is_worked(o.assignments["Kathleen"].get(d))]
+        assert not worked, f"{o.label}: Kathleen worked Mondays {worked}"
+    print(f"  fixed Mon off: Kathleen works 0 of {len(mondays)} Mondays, all options")
 
 
 def test_fixed_work_weekly_guaranteed():
