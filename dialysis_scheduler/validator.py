@@ -168,7 +168,7 @@ def validate(cfg: Config, result) -> ValidationReport:
     report.rules.append(
         RuleResult(
             "No one works an unavailable date",
-            "25.06(B) / leave (H3)",
+            "Approved leave / operational (H3)",
             "PASS" if not unavail_bad else "FAIL",
             "All unavailable dates respected."
             if not unavail_bad else "Scheduled on leave -> " + "; ".join(unavail_bad),
@@ -426,7 +426,7 @@ def validate(cfg: Config, result) -> ValidationReport:
             )
         )
 
-    # --- Statutory holidays in the period (Art. 17) -----------------------
+    # --- Statutory holidays in the period (BCNU stat-holidays article) -----
     end_excl = cfg.start + timedelta(weeks=cfg.weeks)
     stats = holidays_in_range(cfg.start, end_excl)
     stat_credit = ", ".join(
@@ -435,7 +435,7 @@ def validate(cfg: Config, result) -> ValidationReport:
     report.rules.append(
         RuleResult(
             "Statutory holidays (paid entitlement)",
-            "BCNU Art. 17",
+            "BCNU stat holidays",
             "INFO",
             f"{len(stats)} stat holiday(s) fall in this rotation: "
             + (", ".join(f"{d.strftime('%a %d-%b')} {name}" for d, name in stats)

@@ -129,7 +129,7 @@ config  →  model (operating dates)  →  scheduler (CP-SAT × 3 profiles)  →
 |--------|----------------|
 | `dialysis_scheduler/config.py` | Dataclasses (`ShiftDef`, `Nurse`, `Config`), defaults, JSON load/save (tolerant of unknown keys), `apply_derived_ftes`, `Nurse.worked_d10` |
 | `dialysis_scheduler/model.py` | `build_operating_dates` (Friday-anchored weeks), eligibility |
-| `dialysis_scheduler/holidays.py` | BC statutory-holiday dates (BCNU Art. 17) |
+| `dialysis_scheduler/holidays.py` | BC statutory-holiday dates (BCNU) |
 | `dialysis_scheduler/scheduler.py` | Pre-checks, CP-SAT model per profile, greedy fallback, `generate_schedules` / `generate_schedule` |
 | `dialysis_scheduler/validator.py` | Independent validation pass + per-nurse summary |
 | `dialysis_scheduler/excel_export.py` | Four-sheet black-and-white workbook |
@@ -175,7 +175,7 @@ schedules than a single-worker solve. Re-running the same
 inputs may produce slightly different schedules, but every option is always
 feasible, contract-compliant and hits the exact requested shift counts.
 
-### Statutory holidays (BCNU Art. 17)
+### Statutory holidays (BCNU)
 `holidays.py` computes the BC stat holidays per year. A nurse's **stat-shift
 entitlement** is shown on the grid as **`ST`** (paid, not worked) on the **actual
 statutory-holiday dates** in the rotation — **the solver chooses which holidays

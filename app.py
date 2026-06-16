@@ -196,11 +196,11 @@ def sidebar():
     # FTE flex is a fixed secondary check now (counts are the target); 0.08.
     cfg.fte_tolerance = 0.08
 
-    # Statutory holidays in the rotation (BCNU Art. 17), for reference.
+    # Statutory holidays in the rotation (BCNU stat-holidays article), for reference.
     stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
     st.sidebar.subheader("Statutory holidays")
     st.sidebar.caption(
-        f"**{len(stats)}** fall in this rotation (BCNU Art. 17): "
+        f"**{len(stats)}** fall in this rotation: "
         + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
            or "none")
         + ". Set each nurse's stat-day entitlement in the roster."
@@ -219,7 +219,7 @@ def roster_editor():
         "Saturday, at least 1) shift counts plus any paid **stat** days, for the "
         "whole rotation — these exact counts are guaranteed in every option (no "
         "upper cap; scale them up for longer rotations). Stat days are paid "
-        "statutory holidays (BCNU Art. 17), shown as **ST** on the actual holiday "
+        "statutory holidays, shown as **ST** on the actual holiday "
         "date; each replaces one worked D10. **FTE** is derived from the counts "
         "(read-only). The **hard** columns are guarantees that always hold; the "
         "**soft** columns are preferences, honoured most in the Preference option. "
@@ -269,7 +269,7 @@ def roster_editor():
             ),
             "stat": st.column_config.NumberColumn(
                 "Stat shifts", min_value=0, step=1,
-                help="Paid statutory-holiday days (BCNU Art. 17). Each one the "
+                help="Paid statutory-holiday days. Each one the "
                      "nurse takes replaces a worked D10 and shows as ST on the "
                      "actual holiday date. Capped at the holidays in the period.",
             ),

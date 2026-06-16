@@ -17,9 +17,11 @@ The unit operates four days a week — **Fri, Sat, Mon, Wed** — with **D10**
 (10-hour) weekday shifts and **D5** (5-hour) Saturday shifts. The generator
 builds a master schedule with Google OR-Tools **CP-SAT**, a constraint solver.
 It treats each nurse's **requested shift counts as hard** (everyone works exactly
-their D10/D5 numbers) and all the **contract rules as hard** (Saturday caps,
-one Saturday a month, job-share separation, the opt-in per-nurse guarantees).
-**Coverage is soft**: if the roster genuinely cannot fill a day, that shift is
+their D10/D5 numbers) and the **scheduling rules as hard** — the contract weekend
+cap (25.06(E)) and max-consecutive-days, plus unit policies (a Saturday a month,
+job-share separation) and any opt-in per-nurse guarantees. The split between
+contract and unit policy is spelled out in §12. **Coverage is soft**: if the
+roster genuinely cannot fill a day, that shift is
 left **blank and flagged** rather than failing. Everything else — fairness,
 preferences, clustering — is a **soft objective** the solver maximizes. It runs
 the solve three times with three different objective weightings to give you
@@ -107,8 +109,8 @@ options — the options only rearrange *which* days fill those counts.
 ### 4.3 Saturday rules
 - **H2 — rolling weekend cap (25.06(E)):** ≤ 6 Saturdays in any 9-week window
   (proportional for shorter periods). Guarantees ≥ 1 weekend off in 3.
-- **H9 — a Saturday a month:** ≥ 1 Saturday in every rolling 4-week window, for
-  everyone.
+- **H9 — a Saturday a month** *(unit policy, not contract — see §12)*: ≥ 1
+  Saturday in every rolling 4-week window, for everyone.
 
 ### 4.4 Job share — H8
 Nurses sharing a `job_share_group` label are two people splitting **one** line, so
@@ -255,30 +257,42 @@ Manual grid edits and swaps are re-validated live through the same function.
 This separates what the tool treats as a **contract rule** from what is **unit
 policy** or a **modeling interpretation**, so the compliance story is honest.
 
-> **Verification limit.** These article numbers are the *modeling intent*. They
-> should be confirmed against your unit's current NBA Provincial Collective
-> Agreement and your local Extended Work Day (EWD) Memorandum — automated
-> retrieval of the agreement PDFs was blocked, so the numbers below were not
-> re-checked against the live text. The two worth checking **first**, because
-> they most affect compliance, are the **25.06(E) weekend formula** and the
-> **37.5 h full-time week (26.01)**.
+> **Verification status.** The Article 25 (Work Schedules) and Article 26 (Hours
+> of Work) citations below were checked **against the 2022–2025 NBA Provincial
+> Collective Agreement text** and are confirmed (✓). One correction came out of
+> that check: **statutory holidays are *not* Article 17** — Art. 17 is the
+> Posting/Vacancies article (25.03 cross-references "17.01(B)" as the posting
+> cycle). The exact statutory-holiday article number is not in the Art. 25–26
+> text and still needs confirming; the *list* of 13 BC holidays is independent of
+> the number and is correct. The **Extended Work Day Memorandum** (25.11) is a
+> separate attached document — confirm its specific D10 terms locally.
 
-| Modeled as | Cited | What the tool does | Category |
-|------------|-------|--------------------|----------|
-| Full-time week = 37.5 h | 26.01 | FTE = paid hours ÷ (37.5 × weeks) | Contract constant |
-| Master schedule posted ≥ 6 weeks ahead | 25.05 | Warns if the start is < 42 days out | Contract (advisory) |
-| ≤ 6 consecutive days worked | 25.06(C) | Structurally impossible here (longest run is Fri+Sat = 2); still validated | Contract |
-| Off-duty-day consecutiveness | 25.06(D) | Cannot be met on a Mon/Wed/Fri/Sat unit (isolated Tue/Thu closures); flagged as documented non-conformance, not solved | Contract (needs written agreement) |
-| Weekend off ≥ 1 in 3 | 25.06(E) | **Interpreted** as ≤ 6 Saturdays per rolling 9-week window (H2) | Contract, interpreted — **verify** |
-| Short-notice change overtime | 25.08 | Flagged informationally, not priced | Contract (informational) |
-| Extended Work Day (D10 = 10 h > 7.5 h normal) | 25.11 / 26.01 | Flagged; defers to your EWD Memorandum | Contract — confirm EWD memo |
-| Meal / rest periods | 26.03 / 26.04 | Paid hours assume a 30-min unpaid meal (D10 = 9.5 h paid); a missed meal is overtime (Art. 27), flagged not priced | Contract (informational) |
-| Statutory holidays | Art. 17 | 13 BC stats; an ST day is paid, replaces a worked D10, and is placed on the real holiday date | Contract — confirm article + list |
-| ≥ 1 Saturday per rolling 4 weeks ("a Saturday a month") | — | Hard constraint (H9) | **Unit policy, not contract** |
-| Job share: never the same day, combined ≤ 1.0 FTE | — | Hard constraints (H8 + precheck) | **Unit policy** |
-| Exact D10 / D5 counts per nurse | — | Hard | **Unit target** |
-| Mon off / Work weekly / Fri before Sat | — | Hard when ticked | **Per-nurse opt-in, not contract** |
+| Modeled as | Cited | Status | What the tool does | Category |
+|------------|-------|--------|--------------------|----------|
+| Full-time week = 37.5 h | 26.01 | ✓ | FTE = paid hours ÷ (37.5 × weeks) | Contract constant |
+| FTE flex band ± 0.08 | 25.03 | ✓ | Per-line FTE tolerance for the secondary check | Contract constant |
+| Master schedule posted ≥ 6 weeks ahead | 25.05 | ✓ | Warns if the start is < 42 days out | Contract (advisory) |
+| ≤ 6 consecutive days worked | 25.06(C) | ✓ | Structurally impossible here (longest run is Fri+Sat = 2); still validated | Contract |
+| Off-duty days consecutive | 25.06(D) | ✓ | Cannot be met on a Mon/Wed/Fri/Sat unit (isolated Tue/Thu closures); flagged as documented non-conformance, not solved | Contract (needs written agreement) |
+| Off ≥ 1 weekend in 3 per 9-week period (weekend = 2300 Fri–0700 Mon) | 25.06(E)(i) | ✓ | Enforced as ≤ 6 Saturdays per rolling 9-week window (H2) — the unit works only Saturdays, so "weekend worked" = "Saturday worked" | Contract |
+| Short-notice change overtime (< 10 days' notice) | 25.08 | ✓ | Flagged informationally, not priced | Contract (informational) |
+| Extended Work Day (D10 = 10 h > 7.5 h normal) | 25.11 / 26.01 | ✓ (memo separate) | Flagged; defers to your EWD Memorandum | Contract — confirm EWD memo |
+| Meal period: no > 5 consecutive hours without a break | 26.03(A) | ✓ | D10 meal must begin by 1230; D5 = exactly 5 h, so no meal required | Contract |
+| Rest periods: 2×15 min full shift, 1×15 min if ≥ 4 h | 26.04 | ✓ | Informational note on the schedule | Contract (informational) |
+| Statutory holidays | (stat-holidays article — **not** Art. 17; number TBC) | ⚠ number | 13 BC stats; an ST day is paid, replaces a worked D10, placed on the real holiday date | Contract — confirm article no. |
+| ≥ 1 Saturday per rolling 4 weeks ("a Saturday a month") | — | — | Hard constraint (H9) | **Unit policy, not contract** |
+| Job share: never the same day, combined ≤ 1.0 FTE | — | — | Hard constraints (H8 + precheck) | **Unit policy** |
+| Exact D10 / D5 counts per nurse | — | — | Hard | **Unit target** |
+| Mon off / Work weekly / Fri before Sat | — | — | Hard when ticked | **Per-nurse opt-in, not contract** |
 
-What the tool does **not** price or decide: overtime pay (Art. 27), seniority
-order (nurses pick lines by seniority *after* generation), or anything requiring
-the EWD Memorandum's specific terms.
+Note on 25.06(E): the contract sets a weekend **floor** (everyone gets weekends
+*off*); the tool's H2 cap enforces it, while H9 ("a Saturday a month") is a
+separate **unit staffing** wish that pushes the other way — it is not a contract
+requirement. 25.06(E)(i) may also be **waived by mutual agreement**, and
+25.06(E)(ii) (eff. 2023) can disapply it where blocks are limited to ≤ 5
+consecutive shifts — the tool models neither waiver, so it stays on the safe side.
+
+What the tool does **not** price or decide: overtime pay (Art. 27), shift/weekend
+premiums (Art. 28), seniority order (nurses pick lines by seniority *after*
+generation), shift-exchange handling (25.09), or anything requiring the EWD
+Memorandum's specific terms.

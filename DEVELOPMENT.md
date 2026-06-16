@@ -21,7 +21,7 @@ app.py                         Streamlit UI (single file)
 dialysis_scheduler/
   config.py                    dataclasses, defaults, JSON load/save
   model.py                     operating-date materialization, eligibility
-  holidays.py                  BC statutory holidays (Art. 17)
+  holidays.py                  BC statutory holidays
   scheduler.py                 pre-checks + CP-SAT (3 profiles) + greedy fallback
   validator.py                 independent validation pass
   excel_export.py              4-sheet B/W workbook

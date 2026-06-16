@@ -1,5 +1,5 @@
 """British Columbia statutory holidays (BCNU Provincial Collective Agreement,
-Art. 17 "Statutory Holidays").
+the "Statutory Holidays" article).
 
 Used to size each line's paid statutory-holiday entitlement over a rotation.
 Dates are computed per calendar year (Easter via the anonymous Gregorian
@@ -41,7 +41,7 @@ def _victoria_day(year: int) -> date:
 
 
 def bc_statutory_holidays(year: int) -> list[tuple[date, str]]:
-    """The BCNU Art. 17 statutory holidays for a given year."""
+    """The BCNU statutory holidays for a given year."""
     easter = _easter_sunday(year)
     return [
         (date(year, 1, 1), "New Year's Day"),

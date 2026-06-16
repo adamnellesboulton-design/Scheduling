@@ -70,7 +70,7 @@ class Nurse:
     target_fte: float = 0.0  # derived from the shift counts (see above)
     target_d10: int = 0  # desired # of 10-hour weekday shifts (0-40)
     target_d5: int = 0  # desired # of 5-hour Saturday shifts (0-10)
-    stat_days: int = 0  # paid statutory-holiday days (Art. 17): reduce worked D10
+    stat_days: int = 0  # paid statutory-holiday days (BCNU stat-holidays art.): reduce worked D10
     unavailable_dates: list[str] = field(default_factory=list)  # ISO dates
     # Per-line FTE flex (± tolerance). None -> use the config-wide default.
     fte_tolerance: Optional[float] = None
