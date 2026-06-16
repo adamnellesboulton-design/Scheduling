@@ -130,6 +130,37 @@ def test_job_share_combined_over_capacity_rejected():
     assert any("Job share" in m for m in r.messages)
 
 
+def test_job_share_both_stat_off_not_flagged():
+    """Job-share partners may both be ST (stat-holiday off) on the same date --
+    neither is working, so the validator must NOT report a same-day clash.
+    Regression: the H8 check used to test bare dict membership, counting ST/LV
+    as 'present' and false-FAILing a perfectly legal schedule."""
+    from dataclasses import replace
+    from dialysis_scheduler.model import build_operating_dates
+    from dialysis_scheduler.scheduler import ScheduleResult
+
+    cfg = default_config(_friday())
+    cfg.nurses = [
+        Nurse("JS_A", target_d10=10, target_d5=3, job_share_group="A"),
+        Nurse("JS_B", target_d10=10, target_d5=3, job_share_group="A"),
+        Nurse("N1", target_d10=18, target_d5=6),
+    ]
+    op = build_operating_dates(cfg)
+    weekday = next(o for o in op if not o.is_saturday)
+    # Both partners marked ST (off) on the same weekday -> must be allowed.
+    assignments = {
+        "JS_A": {weekday.iso: "ST"},
+        "JS_B": {weekday.iso: "ST"},
+        "N1": {},
+    }
+    res = ScheduleResult(feasible=True, method="cp-sat", status="FEASIBLE",
+                         assignments=assignments, operating=op)
+    report = validate(cfg, res)
+    js_rule = next(r for r in report.rules
+                   if r.rule == "Job-share partners never share a day")
+    assert js_rule.status == "PASS", js_rule.detail
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

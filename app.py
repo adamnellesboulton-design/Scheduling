@@ -25,7 +25,98 @@ from dialysis_scheduler.scheduler import generate_schedule, generate_schedules
 from dialysis_scheduler.validator import validate
 from dialysis_scheduler.excel_export import workbook_bytes, output_filename
 
-st.set_page_config(page_title="Dialysis Unit Scheduler", layout="wide")
+st.set_page_config(
+    page_title="Dialysis Unit Scheduler",
+    page_icon="🩺",
+    layout="wide",
+)
+
+
+# --- look & feel -----------------------------------------------------------
+
+# A calm, clinical visual layer: a teal hero band, card-like metrics, pill tabs
+# and gentle section accents. Tuned to read as a professional hospital tool —
+# restrained, high-contrast and easy on the eyes for non-technical clinical
+# users — not flashy. Colours track the theme in .streamlit/config.toml.
+_STYLE = """
+<style>
+  .block-container { padding-top: 2.2rem; max-width: 1380px; }
+
+  /* Hero band */
+  .ds-hero {
+    background: linear-gradient(135deg, #0F6E6E 0%, #0B5563 100%);
+    color: #fff; border-radius: 0.9rem;
+    padding: 1.35rem 1.6rem; margin-bottom: 1.5rem;
+    box-shadow: 0 6px 20px rgba(15, 110, 110, 0.20);
+  }
+  .ds-hero h1 {
+    color: #fff; font-size: 1.7rem; line-height: 1.2;
+    margin: 0 0 .3rem 0; font-weight: 700; letter-spacing: -0.01em;
+  }
+  .ds-hero p { color: #D7EAEA; margin: 0; font-size: 0.95rem; }
+  .ds-hero .ds-tags { margin-top: .7rem; display: flex; gap: .4rem; flex-wrap: wrap; }
+  .ds-hero .ds-tag {
+    display: inline-block; background: rgba(255,255,255,0.14);
+    border: 1px solid rgba(255,255,255,0.28); color: #EAF5F5;
+    padding: .18rem .65rem; border-radius: 999px; font-size: 0.74rem; font-weight: 500;
+  }
+
+  /* Section headings: subtle teal left accent */
+  [data-testid="stHeading"] h2 {
+    border-left: 4px solid #0F6E6E; padding-left: .6rem;
+    margin-top: .3rem; font-weight: 650;
+  }
+
+  /* Metric cards */
+  [data-testid="stMetric"] {
+    background: #fff; border: 1px solid #DCE4E5; border-radius: 0.7rem;
+    padding: .7rem .95rem; box-shadow: 0 1px 2px rgba(31, 41, 51, 0.04);
+  }
+  [data-testid="stMetricValue"] { color: #0F6E6E; font-weight: 700; }
+  [data-testid="stMetricLabel"] { color: #52616B; }
+
+  /* Tabs as pills */
+  .stTabs [data-baseweb="tab-list"] { gap: .4rem; border-bottom: none; }
+  .stTabs [data-baseweb="tab"] {
+    background: #F1F5F6; border-radius: 0.6rem; padding: .35rem 1rem;
+    border: 1px solid #DCE4E5;
+  }
+  .stTabs [data-baseweb="tab"] p { font-weight: 600; color: #52616B; }
+  .stTabs [aria-selected="true"] { background: #0F6E6E; border-color: #0F6E6E; }
+  .stTabs [aria-selected="true"] p { color: #fff; }
+  .stTabs [data-baseweb="tab-highlight"] { background: transparent; }
+
+  /* Primary buttons a touch bolder */
+  .stButton button[kind="primary"] { font-weight: 650; box-shadow: none; }
+
+  /* Expanders read as light cards */
+  [data-testid="stExpander"] details {
+    border: 1px solid #DCE4E5; border-radius: 0.6rem; background: #FBFCFC;
+  }
+</style>
+"""
+
+
+def _inject_style():
+    st.markdown(_STYLE, unsafe_allow_html=True)
+
+
+def _hero():
+    st.markdown(
+        """
+        <div class="ds-hero">
+          <h1>🩺 Pediatric Dialysis Unit Scheduler</h1>
+          <p>BC Children's Hospital · Hemodialysis · BCNU Provincial Collective
+             Agreement (Art. 25–26)</p>
+          <div class="ds-tags">
+            <span class="ds-tag">Fri / Sat / Mon / Wed unit</span>
+            <span class="ds-tag">Contract-compliant by construction</span>
+            <span class="ds-tag">Three optimized options</span>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # --- session state ---------------------------------------------------------
@@ -411,8 +502,8 @@ PROFILE_DESC = {
 GUARANTEES = (
     "Guaranteed in **every** option, before any preference is considered:\n\n"
     "- Each nurse works **exactly** their requested D10 / D5 counts.\n"
-    "- Every operating day is staffed — Saturday exactly, weekdays at least the "
-    "required number.\n"
+    "- Every operating day is staffed up to the available roster; any genuinely "
+    "uncoverable shifts are left blank and flagged (never silently dropped).\n"
     "- Everyone works **≥ 1 Saturday per month** and **≤ 6 in any 9 weeks**.\n"
     "- Job-share partners never share a day; their combined FTE is ≤ 1.0.\n"
     "- No one is scheduled on a date they're marked unavailable.\n\n"
@@ -722,11 +813,8 @@ def _grid_df(cfg: Config, assignments: dict, operating) -> pd.DataFrame:
 
 def main():
     _init_state()
-    st.title("Pediatric Dialysis Unit Scheduler")
-    st.markdown(
-        "##### BC Children's Hospital · Hemodialysis · "
-        "BCNU Provincial Collective Agreement (Art. 25–26)"
-    )
+    _inject_style()
+    _hero()
     with st.expander("How this works", expanded=False):
         st.markdown(
             "- The unit runs **Fri / Sat / Mon / Wed** each week (rotation starts "

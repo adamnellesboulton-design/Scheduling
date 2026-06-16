@@ -172,11 +172,15 @@ Always-on: `W_EXTRA=600` (weekday over-staffing), `W_THREE_OF_FOUR=1500`
 - **cluster_all** (global) — reward off/off adjacency for everyone.
 
 **Speed/quality:** `num_search_workers = SEARCH_WORKERS` (8) with a wall-clock
-`max_time_in_seconds` budget (`PER_OPTION_SECONDS=2.5` when generating 3,
-`SINGLE_OPTION_SECONDS=4.0` for one); options solved **sequentially** in
-`generate_schedules`. Multi-worker LNS makes this ~3× faster and higher-quality
-than the old single-worker deterministic solve, but it is **not** byte-reproducible.
-`random_seed = 42` is still set but does not guarantee identical multi-worker runs.
+`max_time_in_seconds` budget (`PER_OPTION_SECONDS=4.0` when generating 3,
+`SINGLE_OPTION_SECONDS=6.0` for one); options solved **sequentially** in
+`generate_schedules`. The budget is an upper bound — CP-SAT returns early when it
+proves OPTIMAL — but simple rosters typically converge to a near-optimal
+incumbent (status `FEASIBLE`) well before the cap; the extra headroom mainly
+helps the cluster option and larger / heavily-constrained rosters keep polishing.
+Multi-worker LNS makes this faster and higher-quality than the old single-worker
+deterministic solve, but it is **not** byte-reproducible. `random_seed = 42` is
+still set but does not guarantee identical multi-worker runs.
 
 ---
 

@@ -187,7 +187,8 @@ def validate(cfg: Config, result) -> ValidationReport:
         clashes = []
         for label, members in js_pairs.items():
             for od in operating:
-                both = [n.name for n in members if od.iso in assignments.get(n.name, {})]
+                both = [n.name for n in members
+                        if is_worked(assignments.get(n.name, {}).get(od.iso))]
                 if len(both) > 1:
                     js_ok = False
                     clashes.append(f"{label} on {od.iso}: {', '.join(both)}")

@@ -107,14 +107,17 @@ SAT_PER_MONTH_WINDOW = 4
 # single deterministic worker; all hard rules / exact counts still hold. Options
 # are solved sequentially so each gets the full core budget.
 SEARCH_WORKERS = 8  # portfolio workers per solve (LNS needs > 1); fine on 4 cores
-PER_OPTION_SECONDS = 2.5  # wall-clock budget per option when producing several
-SINGLE_OPTION_SECONDS = 4.0  # a lone option can afford a little longer
+# Budgets are upper bounds: CP-SAT returns early the moment it proves OPTIMAL, so
+# simple rosters still finish fast. The headroom lets LNS keep polishing the
+# incumbent (mainly the cluster option and larger/among-constrained rosters)
+# without making the common case wait.
+PER_OPTION_SECONDS = 4.0  # wall-clock cap per option when producing several
+SINGLE_OPTION_SECONDS = 6.0  # a lone option can afford a little longer
 RANDOM_SEED = 42
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
 SAT_MAX_PER_9WK = 6
 SAT_WINDOW_WEEKS = 9
-SAT_OFF_PER_WINDOW = 3
 
 
 def half_hours(hours: float) -> int:

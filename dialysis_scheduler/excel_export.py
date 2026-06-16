@@ -124,8 +124,6 @@ def _build_schedule_sheet(wb: Workbook, cfg: Config, result):
     # Per-nurse rows.
     first_data_row = 3
     n_cols = 1 + len(operating)
-    sat_cols = {col for iso, col in col_of_iso.items()
-                if any(od.iso == iso and od.is_saturday for od in operating)}
 
     for r, nurse in enumerate(cfg.nurses):
         row = first_data_row + r
@@ -307,7 +305,11 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
     r = kv(r, "Weekly full-time hours", cfg.weekly_full_time_hours)
     r = kv(r, "Generation method", result.method)
     r = kv(r, "Solver status", result.status)
-    r = kv(r, "Extra flex applied", result.tolerance_used)
+    # Exact shift counts are hard in the CP-SAT path (no FTE flex applied); the
+    # flex value is only meaningful for the best-effort greedy fallback.
+    flex_note = ("n/a (exact counts, no flex applied)"
+                 if result.method == "cp-sat" else result.tolerance_used)
+    r = kv(r, "Extra flex applied", flex_note)
     r += 1
 
     c = ws.cell(r, 1, value="Operating shifts")
@@ -343,6 +345,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
             prefs.append("work weekly")
         if nurse.fixed_fri_before_sat:
             prefs.append("Fri before Sat")
+        if nurse.pref_off_mon:
+            prefs.append("off Mon (soft)")
         if nurse.pref_off_wed:
             prefs.append("off Wed")
         if nurse.pref_off_fri:

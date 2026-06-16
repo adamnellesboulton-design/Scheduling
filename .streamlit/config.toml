@@ -1,11 +1,15 @@
-# Clean, minimal, professional theme.
+# Calm, clinical, professional theme — BC Children's Hospital dialysis unit.
 [theme]
 base = "light"
-primaryColor = "#0F6E6E"            # muted teal accent
+primaryColor = "#0F6E6E"               # muted teal accent (brand)
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F6F8"  # soft grey for sidebar / tables
-textColor = "#1F2933"               # near-black slate
+secondaryBackgroundColor = "#F1F5F6"   # soft teal-grey for sidebar / tables
+textColor = "#1F2933"                  # near-black slate
+linkColor = "#0B5563"                  # darker teal for links
+borderColor = "#DCE4E5"                # gentle hairline borders
 font = "sans serif"
+baseRadius = "0.6rem"                  # softly rounded corners throughout
+baseFontSize = 15
 
 [client]
 toolbarMode = "minimal"
