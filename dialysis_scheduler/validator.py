@@ -11,7 +11,12 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from .config import Config
-from .model import OperatingDate, saturday_dates, is_worked
+from .model import (
+    OperatingDate,
+    saturday_dates,
+    is_worked,
+    business_week_index,
+)
 from .fte import scheduled_fte
 from .holidays import holidays_in_range
 from .scheduler import (
@@ -270,6 +275,33 @@ def validate(cfg: Config, result) -> ValidationReport:
             if h9_ok else "Gaps -> " + "; ".join(h9_bad),
         )
     )
+
+    # --- Work-every-week guarantee (per Mon-Fri business week) -------------
+    ww_lines = [n for n in cfg.nurses if n.fixed_work_weekly]
+    if ww_lines and operating:
+        biz_weekday_iso: dict[int, list] = {}
+        for od in operating:
+            if not od.is_saturday:
+                bw = business_week_index(od.d, cfg.start, cfg.weeks)
+                biz_weekday_iso.setdefault(bw, []).append(od.iso)
+        ww_ok = True
+        ww_bad = []
+        for nurse in ww_lines:
+            worked = _nurse_worked_dates(assignments, nurse.name)
+            for bw, isos in biz_weekday_iso.items():
+                if not any(i in worked for i in isos):
+                    ww_ok = False
+                    ww_bad.append(f"{nurse.name}: no weekday in business week {bw + 1}")
+        report.rules.append(
+            RuleResult(
+                "Work-every-week lines work each Mon-Fri week",
+                "Unit policy (hard)",
+                "PASS" if ww_ok else "FAIL",
+                "Lines: " + ", ".join(n.name for n in ww_lines) + ". "
+                + ("Each works >=1 weekday shift in every business week."
+                   if ww_ok else "Gaps -> " + "; ".join(ww_bad)),
+            )
+        )
 
     # --- Shift-count targets met (primary) --------------------------------
     sc_ok = True

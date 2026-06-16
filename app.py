@@ -145,6 +145,7 @@ def roster_editor():
             "fixed_off_mon": n.fixed_off_mon,
             "fixed_work_weekly": n.fixed_work_weekly,
             "fixed_fri_before_sat": n.fixed_fri_before_sat,
+            "pref_off_mon": n.pref_off_mon,
             "pref_off_wed": n.pref_off_wed,
             "pref_off_fri": n.pref_off_fri,
             "unavailable_dates": ", ".join(n.unavailable_dates),
@@ -193,13 +194,19 @@ def roster_editor():
             "fixed_work_weekly": st.column_config.CheckboxColumn(
                 "Work weekly",
                 help="HARD guarantee: this line works at least one WEEKDAY shift "
-                     "every week (Saturdays don't count). Needs enough D10 shifts "
-                     "to cover every week.",
+                     "every BUSINESS week (Mon-Fri; Saturdays don't count). Needs "
+                     "enough D10 shifts to cover every week.",
             ),
             "fixed_fri_before_sat": st.column_config.CheckboxColumn(
                 "Fri before Sat",
                 help="HARD guarantee: whenever this line works a Saturday, it also "
                      "works the preceding Friday. Needs D10 >= D5.",
+            ),
+            "pref_off_mon": st.column_config.CheckboxColumn(
+                "Off Mon (soft)",
+                help="SOFT preference: try to keep Mondays off (honoured in the "
+                     "preference-maximizing option). Different from 'Mon off "
+                     "(fixed)', which NEVER schedules a Monday in any option.",
             ),
             "pref_off_wed": st.column_config.CheckboxColumn(
                 "Off Wed", help="Prefer Wednesdays off"
@@ -240,6 +247,7 @@ def roster_editor():
             fixed_off_mon=bool(r.get("fixed_off_mon", False)),
             fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
             fixed_fri_before_sat=bool(r.get("fixed_fri_before_sat", False)),
+            pref_off_mon=bool(r.get("pref_off_mon", False)),
             pref_off_wed=bool(r["pref_off_wed"]),
             pref_off_fri=bool(r["pref_off_fri"]),
         ))

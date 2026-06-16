@@ -80,6 +80,7 @@ class Nurse:
     # Line preferences (soft).
     pref_nonconsec_sat: bool = False  # avoid back-to-back Saturdays
     pref_clustered: bool = False  # prefer worked days grouped (e.g. Fri+Sat)
+    pref_off_mon: bool = False  # prefer Mondays off (SOFT; cf. fixed_off_mon HARD)
     pref_off_wed: bool = False  # prefer Wednesdays off
     pref_off_fri: bool = False  # prefer Fridays off
     # Fixed days off (HARD): the line is never scheduled this weekday.

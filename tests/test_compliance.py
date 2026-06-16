@@ -15,7 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dialysis_scheduler.config import default_config, Nurse
 from dialysis_scheduler.scheduler import generate_schedules
-from dialysis_scheduler.model import build_operating_dates, is_worked
+from dialysis_scheduler.model import (
+    build_operating_dates,
+    is_worked,
+    business_week_index,
+)
 
 
 def _friday(weeks_out=8):
@@ -213,22 +217,25 @@ def test_fixed_off_mon_guaranteed():
 
 
 def test_fixed_work_weekly_guaranteed():
-    """A line ticked 'Work weekly' works >=1 WEEKDAY shift every week (Saturdays
-    don't count) in any option."""
+    """A line ticked 'Work weekly' works >=1 WEEKDAY shift every BUSINESS week
+    (Mon-Fri; Saturdays don't count) in any option."""
     cfg = default_config(_friday())
     for n in cfg.nurses:
         if n.name == "Joane":
             n.fixed_work_weekly = True
     opts = generate_schedules(cfg)
     op = build_operating_dates(cfg)
-    weeks = sorted({d.week_index for d in op})
+    biz_weeks: dict[int, list] = {}
+    for d in op:
+        if not d.is_saturday:
+            bw = business_week_index(d.d, cfg.start, cfg.weeks)
+            biz_weeks.setdefault(bw, []).append(d.iso)
     for o in opts:
         assert not check_contract(cfg, o), o.label
-        for wk in weeks:
-            worked = any(is_worked(o.assignments["Joane"].get(d.iso))
-                         for d in op if d.week_index == wk and not d.is_saturday)
-            assert worked, f"{o.label}: Joane no weekday in week {wk}"
-    print(f"  work weekly: Joane works a weekday in all {len(weeks)} weeks")
+        for bw, isos in biz_weeks.items():
+            worked = any(is_worked(o.assignments["Joane"].get(i)) for i in isos)
+            assert worked, f"{o.label}: Joane no weekday in business week {bw}"
+    print(f"  work weekly: Joane works a weekday in all {len(biz_weeks)} business weeks")
 
 
 def test_fixed_fri_before_sat_guaranteed():

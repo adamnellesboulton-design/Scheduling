@@ -68,12 +68,15 @@ python tests/test_profiles.py     # the three options each do their job
    - **Job share** label — two lines with the same label never work the same day
      (two part-timers splitting **one** full-time line; combined FTE ≤ 1.0).
    - **Preferences** (tick boxes) — non-consecutive Saturdays, clustered shifts,
-     off Wed/Fri. Honoured most in the preference option.
+     off **Mon**/Wed/Fri. Honoured most in the preference option. (Off Mon here
+     is the *soft* preference — distinct from the hard **Mon off (fixed)** below.)
    - **Fixed guarantees** (tick boxes, HARD in all three options) — **Mon off
      (fixed)** (line never works a Monday), **Work weekly** (line works at least
-     one *weekday* shift every week; Saturdays don't count), and **Fri before
-     Sat** (whenever the line works a Saturday it also works the preceding
-     Friday). These are enforced, not just preferred.
+     one *weekday* shift every **business week**, Mon–Fri; Saturdays don't count),
+     and **Fri before Sat** (whenever the line works a Saturday it also works the
+     preceding Friday). These are enforced, not just preferred. The business week
+     wraps cyclically across the rotation seam, so a line never ends up with two
+     shifts at one end of the period and none at the other.
    - **Unavailable dates** — comma-separated `YYYY-MM-DD`.
    - **Seniority is not used** — lines are picked by seniority *after*
      generation, so it's left out of the build.

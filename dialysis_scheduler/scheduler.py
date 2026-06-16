@@ -26,6 +26,8 @@ from .model import (
     saturday_dates,
     nurse_eligible_for,
     is_worked,
+    business_week_index,
+    business_weekday_ois_by_week,
 )
 from .holidays import holidays_in_range
 
@@ -347,19 +349,22 @@ def shift_count_feasibility_check(
                     "fixed guarantee). Lower the D10 count or untick Mondays off."
                 )
 
-        # A "work every week" line needs at least one WEEKDAY shift for each week
-        # it has an eligible weekday -- so its worked D10 count must reach that.
+        # A "work every week" line needs at least one WEEKDAY shift for each
+        # BUSINESS week (Mon-Fri) it has an eligible weekday -- so its worked D10
+        # count must reach the number of such business weeks.
         if n.fixed_work_weekly:
             weeks_avail = len({
-                od.week_index for od in operating
+                business_week_index(od.d, cfg.start, cfg.weeks)
+                for od in operating
                 if not od.is_saturday and nurse_eligible_for(n, od)
                 and not (n.fixed_off_mon and od.weekday == 0)
             })
             if n.worked_d10() < weeks_avail:
                 msgs.append(
                     f"{n.name}: only {n.worked_d10()} weekday shifts can't cover "
-                    f"every one of the {weeks_avail} weeks (work-every-week is a "
-                    "fixed guarantee). Raise the D10 count or untick work every week."
+                    f"every one of the {weeks_avail} business weeks (work-every-week "
+                    "is a fixed guarantee). Raise the D10 count or untick work every "
+                    "week."
                 )
 
         # Friday-before-Saturday needs at least one worked Friday per worked
@@ -527,17 +532,17 @@ def _solve_cpsat(
                 model.Add(sum(window_vars) <= cap)
 
     # Fixed "work every week": a HARD guarantee the line works >= 1 WEEKDAY shift
-    # each week (no fully-idle weeks). Saturdays don't count -- the cadence is
-    # about being present on the unit during the week. Weeks where the line has no
-    # eligible weekday (e.g. fully on approved leave) are skipped.
-    weekday_ois_by_week: dict[int, list[int]] = {}
-    for oi, od in enumerate(operating):
-        if not od.is_saturday:
-            weekday_ois_by_week.setdefault(od.week_index, []).append(oi)
+    # each BUSINESS week (Mon-Fri), not each Friday-anchored rotation week.
+    # Saturdays don't count -- the cadence is about being present on the unit
+    # during the working week. Business weeks straddle the rotation-week seam and
+    # wrap cyclically (see business_week_index), so the line gets exactly one
+    # shift per Mon-Fri week with no doubled-up/empty week at the boundary. Weeks
+    # where the line has no eligible weekday (e.g. fully on leave) are skipped.
+    biz_weekday_ois = business_weekday_ois_by_week(operating, cfg.start, weeks)
     for ni, nurse in enumerate(nurses):
         if not nurse.fixed_work_weekly:
             continue
-        for wk, ois in weekday_ois_by_week.items():
+        for bw, ois in biz_weekday_ois.items():
             wk_vars = [x[(ni, oi)] for oi in ois if (ni, oi) in x]
             if wk_vars:
                 model.Add(sum(wk_vars) >= 1)
@@ -747,8 +752,11 @@ def _solve_cpsat(
 
     for ni, nurse in enumerate(nurses):
         if pw:
-            # a) Off-day preferences: penalize working that weekday.
+            # a) Off-day preferences: penalize working that weekday. Monday-off
+            #    here is the SOFT preference -- distinct from the HARD fixed_off_mon
+            #    guarantee (which drops the Monday variable entirely).
             for flag, wd in (
+                (nurse.pref_off_mon, 0),
                 (nurse.pref_off_wed, 2),
                 (nurse.pref_off_fri, 4),
             ):
@@ -999,11 +1007,12 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
                 )
 
     # Work-every-week repair: every fixed_work_weekly line must have >= 1 WEEKDAY
-    # shift each week. Best-effort: this may add an extra nurse beyond demand.
+    # shift each BUSINESS week (Mon-Fri). Best-effort: may add an extra beyond demand.
     weekday_ods_by_week: dict[int, list[OperatingDate]] = {}
     for od in operating:
         if not od.is_saturday:
-            weekday_ods_by_week.setdefault(od.week_index, []).append(od)
+            bw = business_week_index(od.d, cfg.start, weeks)
+            weekday_ods_by_week.setdefault(bw, []).append(od)
     for n in nurses:
         if not n.fixed_work_weekly:
             continue
