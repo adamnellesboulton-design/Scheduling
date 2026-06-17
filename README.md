@@ -20,7 +20,8 @@ print-ready Excel workbooks. It's built to grow into a hospital-wide system.
 ## The unit at a glance
 
 The unit runs a single day shift, four operating days a week, and **the rotation
-starts on a Friday**:
+anchors to Friday by default** (the start date is selectable — the model handles
+any anchor weekday):
 
 | Day | Shift | Elapsed | Paid |
 |-----|-------|---------|------|
@@ -62,7 +63,8 @@ python tests/test_profiles.py     # the three options each do their job
 
 ## How you use it
 
-1. **Sidebar** — start date (must be a Friday), rotation length (6–52 wk,
+1. **Sidebar** — start date (anchors the rotation; **Friday by default**, but any
+   weekday is allowed), rotation length (6–52 wk,
    default 12), and **nurses needed per day** (the solver staffs exactly this
    where the counts allow; default 3/3/3/2). Statutory holidays in the period are
    listed for reference. Load/save config as JSON.

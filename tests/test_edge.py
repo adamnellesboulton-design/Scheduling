@@ -213,6 +213,43 @@ def test_reoptimize_keeps_schedule_compliant():
         assert s.scheduled_d10 == s.target_d10 and s.scheduled_d5 == s.target_d5
 
 
+def _start_on(weekday, weeks_out=8):
+    t = date.today()
+    return (t + timedelta(days=(weekday - t.weekday()) % 7, weeks=weeks_out)).isoformat()
+
+
+def test_non_friday_start_generates():
+    """The rotation anchor is selectable: Mon/Wed/Sat starts all produce feasible,
+    compliant schedules over the same Mon/Wed/Fri/Sat operating days."""
+    for wd in (0, 2, 5):  # Mon, Wed, Sat
+        cfg = default_config(_start_on(wd))
+        assert cfg.start.weekday() == wd
+        opts = generate_schedules(cfg)
+        assert all(o.feasible for o in opts), (wd, opts[0].messages)
+        for o in opts:
+            rep = validate(cfg, o)
+            assert not [r for r in rep.rules if r.status == "FAIL"]
+
+
+def test_fri_before_sat_on_saturday_start():
+    """Fri-before-Sat uses the calendar Friday before each Saturday, so it holds
+    even when the rotation is anchored on a Saturday (the block's Friday comes
+    *after* its Saturday — the bug the date-based fix closes)."""
+    from datetime import date as _d, timedelta as _td
+    from dialysis_scheduler.model import is_worked
+    cfg = default_config(_start_on(5))  # Saturday anchor
+    for n in cfg.nurses:
+        if n.name == "Leslie":
+            n.fixed_fri_before_sat = True
+    opts = generate_schedules(cfg)
+    for o in opts:
+        a = o.assignments["Leslie"]
+        for od in o.operating:
+            if od.is_saturday and is_worked(a.get(od.iso)):
+                prev_fri = (od.d - _td(days=1)).isoformat()
+                assert is_worked(a.get(prev_fri)), f"{o.label}: Sat {od.iso} w/o its Friday"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

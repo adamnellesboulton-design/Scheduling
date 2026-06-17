@@ -175,33 +175,29 @@ def validate(cfg: Config, result) -> ValidationReport:
         )
     )
 
-    # --- Fixed days off respected (Mon-off / Fri-off guarantees) ----------
+    # --- Fixed days off respected (Mon/Wed/Fri off guarantees) ------------
     # Solver-enforced by variable omission, but re-checked so a manual grid edit
     # or swap onto a guaranteed-off weekday is caught.
-    off_lines = [n for n in cfg.nurses if n.fixed_off_mon or n.fixed_off_fri]
+    _WD = {0: "Mon", 2: "Wed", 4: "Fri"}
+    off_lines = [n for n in cfg.nurses if n.fixed_off_weekdays()]
     if off_lines:
         off_bad = []
         for nurse in off_lines:
             worked = _nurse_worked_dates(assignments, nurse.name)
+            off_wd = nurse.fixed_off_weekdays()
             for od in operating:
-                if od.iso not in worked:
-                    continue
-                if nurse.fixed_off_mon and od.weekday == 0:
-                    off_bad.append(f"{nurse.name} on Monday {od.iso}")
-                if nurse.fixed_off_fri and od.weekday == 4:
-                    off_bad.append(f"{nurse.name} on Friday {od.iso}")
+                if od.iso in worked and od.weekday in off_wd:
+                    off_bad.append(f"{nurse.name} on {_WD[od.weekday]} {od.iso}")
         report.rules.append(
             RuleResult(
-                "Fixed days off respected (Mon/Fri off)",
+                "Fixed days off respected (Mon/Wed/Fri off)",
                 "Unit policy (hard)",
                 "PASS" if not off_bad else "FAIL",
                 "Lines with a fixed day off: "
                 + ", ".join(
                     f"{n.name} ("
-                    + "/".join(d for d, on in
-                               (("Mon", n.fixed_off_mon), ("Fri", n.fixed_off_fri))
-                               if on) + ")"
-                    for n in off_lines)
+                    + "/".join(_WD[w] for w in sorted(n.fixed_off_weekdays()))
+                    + ")" for n in off_lines)
                 + ". "
                 + ("All respected." if not off_bad
                    else "Violations -> " + "; ".join(off_bad)),
@@ -342,15 +338,15 @@ def validate(cfg: Config, result) -> ValidationReport:
     # without its Friday is caught (and hard-blocks a swap -- see _swap_hard_blocks).
     fbs_lines = [n for n in cfg.nurses if n.fixed_fri_before_sat]
     if fbs_lines and operating:
-        fri_iso_by_week = {od.week_index: od.iso for od in operating if od.weekday == 4}
+        op_isos = {od.iso for od in operating}
         fbs_ok = True
         fbs_bad = []
         for nurse in fbs_lines:
             worked = _nurse_worked_dates(assignments, nurse.name)
             for od in operating:
                 if od.is_saturday and od.iso in worked:
-                    fri = fri_iso_by_week.get(od.week_index)
-                    if not (fri and fri in worked):
+                    fri = (od.d - timedelta(days=1)).isoformat()  # preceding Friday
+                    if not (fri in op_isos and fri in worked):
                         fbs_ok = False
                         fbs_bad.append(f"{nurse.name}: Saturday {od.iso} without its Friday")
         report.rules.append(

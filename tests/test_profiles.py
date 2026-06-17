@@ -106,6 +106,41 @@ def test_nonconsec_sat_preference_reduces_back_to_back():
     assert pref_cs == 0
 
 
+def test_overstaffing_extra_avoids_wednesday():
+    """When a week is overstaffed (109 D10 vs 108 seats), the extra shift lands on
+    Monday or Friday, never mid-week Wednesday, in every option."""
+    cfg = default_config(_friday())  # default roster: exactly one extra weekday
+    op = build_operating_dates(cfg)
+    for o in generate_schedules(cfg):
+        wed_extra = 0
+        for od in op:
+            if od.is_saturday:
+                continue
+            assigned = sum(1 for n in cfg.nurses
+                           if is_worked(o.assignments[n.name].get(od.iso)))
+            if assigned > od.demand and od.weekday == 2:
+                wed_extra += assigned - od.demand
+        assert wed_extra == 0, f"{o.label}: {wed_extra} extra shift(s) on Wednesday"
+    print("  overstaffing: extra shifts avoid Wednesday in all options")
+
+
+def test_even_spread_preference_balances_weekdays():
+    """Ticking 'prefer even spread' lowers that nurse's Mon/Wed/Fri imbalance in
+    the Preference option (where global weekday-equity is otherwise low)."""
+    def adam_spread(flag):
+        cfg = default_config(_friday())
+        for n in cfg.nurses:
+            if n.name == "Adam":
+                n.pref_even_spread = flag
+        pref = _by_label(generate_schedules(cfg))["Preference"]
+        op = build_operating_dates(cfg)
+        c = [_weekday_count(op, pref.assignments, "Adam", wd) for wd in (0, 2, 4)]
+        return max(c) - min(c)
+    off, on = adam_spread(False), adam_spread(True)
+    print(f"  even spread: Adam weekday spread off={off} on={on}")
+    assert on < off, "even-spread preference should reduce the weekday imbalance"
+
+
 if __name__ == "__main__":
     for fn in [v for k, v in sorted(globals().items()) if k.startswith("test_")]:
         print(fn.__name__)

@@ -61,7 +61,11 @@ def effective_stat(nurse: Nurse, stat_ois: list, operating: list) -> int:
 # as many demanded slots as the fixed counts allow.
 W_SHORTFALL = 8000  # penalty per unfilled (blank) shift -- minimized first
 W_THREE_OF_FOUR = 1500  # low-FTE lines: push to work >=3 of every 4 weeks
-W_EXTRA = 600  # penalty per extra (over-demand) nurse on a day
+W_EXTRA = 600  # penalty per extra (over-demand) nurse on a day (Mon/Fri/Sat)
+# When a week is overstaffed, prefer the extra to land on Monday or Friday rather
+# than mid-week Wednesday: Wednesday extras carry this added penalty on top of
+# W_EXTRA, so the solver pushes overage to the ends of the week.
+W_EXTRA_MIDWEEK = 300
 
 # Three options, each maximizing a different secondary goal. The dict gives the
 # weight of each differentiating term per profile.
@@ -223,8 +227,7 @@ def coverage_feasibility_check(
                 continue
             # A fixed weekday-off line can't fill that weekday (mirrors the
             # variable omission in the model), so it doesn't add capacity.
-            if (n.fixed_off_mon and od.weekday == 0) or \
-               (n.fixed_off_fri and od.weekday == 4):
+            if od.weekday in n.fixed_off_weekdays():
                 continue
             label = (n.job_share_group or "").strip()
             if label:
@@ -342,13 +345,9 @@ def shift_count_feasibility_check(
                 f"is {sat_max}. Lower it."
             )
 
-        # Fixed weekday-off guarantees (Mon and/or Fri) shrink the weekdays a line
+        # Fixed weekday-off guarantees (Mon/Wed/Fri) shrink the weekdays a line
         # can work; its worked-D10 target must still fit the rest.
-        off_wd = set()
-        if n.fixed_off_mon:
-            off_wd.add(0)
-        if n.fixed_off_fri:
-            off_wd.add(4)
+        off_wd = n.fixed_off_weekdays()
         if off_wd:
             wd_slots = sum(
                 1 for od in operating
@@ -356,8 +355,8 @@ def shift_count_feasibility_check(
                 and od.iso not in n.unavailable_dates
             )
             if n.worked_d10() > wd_slots:
-                days = " and ".join(
-                    {0: "Mondays", 4: "Fridays"}[w] for w in sorted(off_wd))
+                names = {0: "Mondays", 2: "Wednesdays", 4: "Fridays"}
+                days = " and ".join(names[w] for w in sorted(off_wd))
                 msgs.append(
                     f"{n.name}: D10 count {n.worked_d10()} can't fit in the "
                     f"{wd_slots} available weekdays ({days} off is a fixed "
@@ -381,8 +380,7 @@ def shift_count_feasibility_check(
                 business_week_index(od.d, cfg.start, cfg.weeks)
                 for od in operating
                 if not od.is_saturday and nurse_eligible_for(n, od)
-                and not (n.fixed_off_mon and od.weekday == 0)
-                and not (n.fixed_off_fri and od.weekday == 4)
+                and od.weekday not in n.fixed_off_weekdays()
             })
             if n.worked_d10() < weeks_avail:
                 msgs.append(
@@ -488,9 +486,7 @@ def _build_core_model(cfg: Config, operating: list[OperatingDate]) -> _CoreModel
                 continue
             # Fixed weekday-off is a HARD guarantee: omit the variable entirely so
             # the line can never be scheduled that weekday (same mechanism as H3).
-            if nurse.fixed_off_mon and od.weekday == 0:
-                continue
-            if nurse.fixed_off_fri and od.weekday == 4:
+            if od.weekday in nurse.fixed_off_weekdays():
                 continue
             x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
@@ -546,7 +542,10 @@ def _build_core_model(cfg: Config, operating: list[OperatingDate]) -> _CoreModel
         if vars_for_day:
             extra = model.NewIntVar(0, len(vars_for_day), f"extra_{oi}")
             model.Add(extra >= assigned - od.demand)
-            extra_terms.append(extra)
+            # Overage on mid-week (Wednesday) costs more, so the solver prefers to
+            # put any extra shift on Monday or Friday (the ends of the week).
+            w = W_EXTRA + (W_EXTRA_MIDWEEK if od.weekday == 2 else 0)
+            extra_terms.append((extra, w))
 
     # H6 is structural (one var per nurse-day). H3 handled by var omission.
     # H4 is structurally impossible to violate (longest run = Fri-Sat).
@@ -587,24 +586,21 @@ def _build_core_model(cfg: Config, operating: list[OperatingDate]) -> _CoreModel
                 model.Add(sum(wk_vars) >= 1)
 
     # Fixed Friday-before-Saturday: a HARD guarantee that every worked Saturday is
-    # preceded by its Friday (the Friday of the same Friday-anchored week). If that
-    # Friday isn't workable (e.g. on leave), the Saturday can't be worked either.
-    fri_oi_by_week: dict[int, int] = {}
-    for oi, od in enumerate(operating):
-        if od.weekday == 4:  # Friday anchors the week
-            fri_oi_by_week[od.week_index] = oi
+    # preceded by its Friday -- the **calendar day before** (robust to any rotation
+    # anchor, not just Friday-start). If that Friday isn't in the schedulable period
+    # or isn't workable (e.g. on leave), the Saturday can't be worked either.
+    iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
     for ni, nurse in enumerate(nurses):
         if not nurse.fixed_fri_before_sat:
             continue
-        for wk, sat_ois in sat_indices_by_week.items():
-            fri_oi = fri_oi_by_week.get(wk)
-            for sat_oi in sat_ois:
-                if (ni, sat_oi) not in x:
-                    continue
-                if fri_oi is not None and (ni, fri_oi) in x:
-                    model.Add(x[(ni, fri_oi)] >= x[(ni, sat_oi)])
-                else:
-                    model.Add(x[(ni, sat_oi)] == 0)  # no Friday => no Saturday
+        for sat_oi, od in enumerate(operating):
+            if not od.is_saturday or (ni, sat_oi) not in x:
+                continue
+            fri_oi = iso_to_oi.get((od.d - timedelta(days=1)).isoformat())
+            if fri_oi is not None and (ni, fri_oi) in x:
+                model.Add(x[(ni, fri_oi)] >= x[(ni, sat_oi)])
+            else:
+                model.Add(x[(ni, sat_oi)] == 0)  # no preceding Friday => no Saturday
 
     # H8: job share -- lines sharing a non-empty label never work the same day
     # (two people splitting one line). At most one member of the group may be
@@ -682,8 +678,8 @@ def _solve_cpsat(
     # Coverage: fill demand (minimize blanks) first, then avoid over-staffing.
     for short in core.short_terms:
         obj_terms.append(W_SHORTFALL * short)
-    for extra in core.extra_terms:
-        obj_terms.append(W_EXTRA * extra)
+    for extra, w in core.extra_terms:
+        obj_terms.append(w * extra)
 
     # 2. Weekday equity within FTE class (balance each weekday across equals).
     #    Weight depends on the option profile (high for "equity-maximizing").
@@ -715,10 +711,17 @@ def _solve_cpsat(
                 obj_terms.append(prof["wd_equity"] * spread)
 
     # 2b. Per-nurse weekday-type balance: each nurse's Mon/Wed/Fri counts should
-    #     be close, so nobody is stuck working only one weekday. Works for any
-    #     roster (unlike the within-class term above, which needs equal FTEs).
-    if prof["wd_equity"] and len(weekday_codes) > 1:
-        for ni in range(len(nurses)):
+    #     be close, so nobody is stuck working only one weekday. Applied to
+    #     everyone at the profile's wd_equity weight, PLUS an extra per-nurse boost
+    #     (the profile's preference weight) for anyone who ticked 'prefer even
+    #     spread' -- so that line gets an evenly-distributed week even in options
+    #     where global weekday-equity is otherwise low.
+    if len(weekday_codes) > 1:
+        for ni, nurse in enumerate(nurses):
+            weight = prof["wd_equity"] + (
+                prof["pref"] if nurse.pref_even_spread else 0)
+            if not weight:
+                continue
             per_wd = []
             for wd in weekday_codes:
                 cv = model.NewIntVar(0, weeks, f"nwd_{ni}_{wd}")
@@ -733,7 +736,7 @@ def _solve_cpsat(
             model.AddMinEquality(lo, per_wd)
             sp = model.NewIntVar(0, weeks, f"nwdsp_{ni}")
             model.Add(sp == hi - lo)
-            obj_terms.append(prof["wd_equity"] * sp)
+            obj_terms.append(weight * sp)
 
     # 3. Consistency: penalize week-over-week changes in the WEEKDAY line, so
     #    each nurse tends to work the same weekdays every week (a stable,
@@ -999,8 +1002,9 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 
     sat_windows = _sat_window_bounds(weeks)
 
-    # Friday that anchors each week, for the Friday-before-Saturday guarantee.
-    fri_iso_by_week = {od.week_index: od.iso for od in operating if od.weekday == 4}
+    # Worked-dates set lets the Fri-before-Sat guarantee look up the calendar
+    # Friday immediately before each Saturday (robust to any rotation anchor).
+    operating_isos = {od.iso for od in operating}
 
     def sat_ok(nurse: Nurse, od: OperatingDate) -> bool:
         # Check every rolling window containing this Saturday stays within cap.
@@ -1015,13 +1019,11 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 
     def fixed_ok(nurse: Nurse, od: OperatingDate) -> bool:
         # Honour the per-line HARD guarantees even in the fallback.
-        if nurse.fixed_off_mon and od.weekday == 0:
-            return False
-        if nurse.fixed_off_fri and od.weekday == 4:
+        if od.weekday in nurse.fixed_off_weekdays():
             return False
         if nurse.fixed_fri_before_sat and od.is_saturday:
-            fri = fri_iso_by_week.get(od.week_index)  # need the Friday worked first
-            if not (fri and is_worked(assignments[nurse.name].get(fri))):
+            fri = (od.d - timedelta(days=1)).isoformat()  # preceding Friday worked
+            if not (fri in operating_isos and is_worked(assignments[nurse.name].get(fri))):
                 return False
         return True
 
@@ -1222,8 +1224,8 @@ def reoptimize_to_fit(
     obj = []
     for short in core.short_terms:
         obj.append(W_SHORTFALL * short)
-    for extra in core.extra_terms:
-        obj.append(W_EXTRA * extra)
+    for extra, w in core.extra_terms:
+        obj.append(w * extra)
     for (ni, oi), var in x.items():
         worked_now = is_worked(current.get(cfg.nurses[ni].name, {}).get(operating[oi].iso))
         obj.append((1 - var) if worked_now else var)  # penalize any difference

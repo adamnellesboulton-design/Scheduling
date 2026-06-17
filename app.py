@@ -180,11 +180,18 @@ def sidebar():
             except Exception as e:  # noqa: BLE001
                 st.error(f"Invalid config: {e}")
 
-    # Schedule period.
+    # Schedule period. The rotation anchors to whatever weekday the start date
+    # falls on (the model handles any anchor); Friday is the default.
     st.sidebar.subheader("Schedule period")
-    start = st.sidebar.date_input("Start date (must be a Friday)", value=cfg.start)
+    start = st.sidebar.date_input(
+        "Start date (rotation anchor)", value=cfg.start,
+        help="The rotation is anchored to this date's weekday — Friday by default. "
+             "You can start on another weekday if your posting calls for it.",
+    )
+    _wd_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                "Saturday", "Sunday"][start.weekday()]
     if start.weekday() != 4:
-        st.sidebar.error("Start date must be a Friday — the rotation starts Friday.")
+        st.sidebar.caption(f"Anchored to **{_wd_name}** (default is Friday).")
     weeks = st.sidebar.number_input(
         "Rotation length (weeks)", min_value=6, max_value=52,
         value=int(cfg.weeks), step=1,
@@ -259,12 +266,14 @@ def roster_editor():
             "stat": int(n.stat_days),
             "job_share": n.job_share_group,
             "fixed_off_mon": n.fixed_off_mon,
+            "fixed_off_wed": n.fixed_off_wed,
             "fixed_off_fri": n.fixed_off_fri,
             "fixed_work_weekly": n.fixed_work_weekly,
             "fixed_fri_before_sat": n.fixed_fri_before_sat,
             "pref_off_mon": n.pref_off_mon,
             "pref_off_wed": n.pref_off_wed,
             "pref_off_fri": n.pref_off_fri,
+            "pref_even_spread": n.pref_even_spread,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
             "unavailable_dates": ", ".join(n.unavailable_dates),
@@ -310,6 +319,11 @@ def roster_editor():
                      "on a Monday. If too many nurses opt out, a Monday may be left "
                      "short — shown as a blank shift.",
             ),
+            "fixed_off_wed": st.column_config.CheckboxColumn(
+                "Wed off — hard",
+                help="Hard guarantee (every option): this nurse is never scheduled "
+                     "on a Wednesday. Needs enough Mon/Fri capacity for their D10s.",
+            ),
             "fixed_off_fri": st.column_config.CheckboxColumn(
                 "Fri off — hard",
                 help="Hard guarantee (every option): this nurse is never scheduled "
@@ -343,6 +357,12 @@ def roster_editor():
                 "Fri off — soft",
                 help="Soft preference: try to keep this nurse's Fridays free. "
                      "Honoured most in the Preference option.",
+            ),
+            "pref_even_spread": st.column_config.CheckboxColumn(
+                "Even spread — soft",
+                help="Soft preference: spread this nurse's shifts evenly across "
+                     "Mon/Wed/Fri rather than bunching on one weekday. Honoured "
+                     "most in the Preference option. (Opposite of 'Cluster shifts'.)",
             ),
             "pref_nonconsec_sat": st.column_config.CheckboxColumn(
                 "Spread Saturdays — soft",
@@ -389,6 +409,7 @@ def roster_editor():
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
             pref_clustered=bool(r["pref_clustered"]),
             fixed_off_mon=bool(r.get("fixed_off_mon", False)),
+            fixed_off_wed=bool(r.get("fixed_off_wed", False)),
             fixed_off_fri=off_fri,
             fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
             # 'Fri off' overrides 'Fri before Sat' (they conflict).
@@ -396,6 +417,7 @@ def roster_editor():
             pref_off_mon=bool(r.get("pref_off_mon", False)),
             pref_off_wed=bool(r["pref_off_wed"]),
             pref_off_fri=bool(r["pref_off_fri"]),
+            pref_even_spread=bool(r.get("pref_even_spread", False)),
         ))
     cfg.nurses = new_nurses
     cfg.apply_derived_ftes()
@@ -547,9 +569,6 @@ def generate_section():
         "arrangement differs."
     )
     if st.button("Generate three options", type="primary", width="stretch"):
-        if cfg.start.weekday() != 4:
-            st.error("Start date must be a Friday. Fix it in the sidebar.")
-            return
         if not cfg.nurses:
             st.error("Add at least one nurse to the roster.")
             return
@@ -631,8 +650,8 @@ GUARANTEES = (
     "- Job-share partners never work the same day; their combined workload stays "
     "within one full-time line.\n"
     "- No nurse is scheduled on a date marked unavailable.\n"
-    "- Every per-nurse **hard** guarantee ticked in the roster (Mon off, Fri "
-    "off, Work weekly, Fri before Sat) holds.\n\n"
+    "- Every per-nurse **hard** guarantee ticked in the roster (Mon/Wed/Fri off, "
+    "Work weekly, Fri before Sat) holds.\n\n"
     "The three options differ **only** in how those fixed shifts are arranged "
     "across the calendar — never in how many each nurse works."
 )
@@ -996,8 +1015,9 @@ def main():
     with st.expander("How this works", expanded=False):
         st.markdown(
             "- The unit runs **Fri / Sat / Mon / Wed** each week (the rotation "
-            "starts on a Friday). Weekdays are **D10** (10-hour) shifts; Saturdays "
-            "are **D5** (5-hour) shifts.\n"
+            "anchors to Friday by default — the start date is selectable). "
+            "Weekdays are **D10** (10-hour) shifts; Saturdays are **D5** (5-hour) "
+            "shifts.\n"
             "- In the **roster**, give each nurse their **D10** and **D5**"
             + (" and **stat**" if SHOW_STAT_HOLIDAYS else "")
             + " counts. The generator hits those exact counts while keeping "

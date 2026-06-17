@@ -33,7 +33,8 @@ three genuinely different but equally-compliant **options**.
 
 From the roster and the sidebar:
 
-- **Period**: a start date (a Friday) and a number of `weeks`.
+- **Period**: a start date (Friday by default, but any weekday is allowed — the
+  model anchors the rotation to whatever weekday it falls on) and a `weeks` count.
 - **Operating days & demand**: how many nurses are needed each Mon/Wed/Fri/Sat.
 - **Per nurse**: name, `target_d10`, `target_d5`, `stat_days` (paid statutory
   days off), `unavailable_dates`, an optional `job_share_group`, soft
@@ -76,8 +77,8 @@ Two structural guarantees are baked in by simply **omitting** variables, so they
 can never be violated:
 
 - A nurse marked unavailable on a date gets no variable there (**H3**).
-- A `fixed_off_mon` / `fixed_off_fri` nurse gets no variable on any Monday /
-  Friday (the hard "never Mondays" / "never Fridays").
+- A nurse with a fixed weekday off (`Nurse.fixed_off_weekdays()` — any of Mon /
+  Wed / Fri) gets no variable on that weekday (the hard "never works it").
 
 Statutory holidays get their own binaries `st[ni, oi]` — the solver **chooses**
 which holidays each nurse takes off (paid, not worked), up to entitlement, spread
@@ -118,11 +119,12 @@ Nurses sharing a `job_share_group` label are two people splitting **one** line, 
 **at most one** of them is assigned on any given day.
 
 ### 4.5 Opt-in per-nurse guarantees (hard when ticked)
-- **Mon off:** never a Monday (done by variable omission, §3).
-- **Fri off:** never a Friday (variable omission). Mutually exclusive with *Fri
-  before Sat* (you can't precede a Saturday with a Friday you never work) — the
-  UI drops the latter when this is set, and a loaded config with both is rejected
-  by the pre-check.
+- **Mon off / Wed off / Fri off:** never that weekday (done by variable omission,
+  §3; `Nurse.fixed_off_weekdays()` is the single source of truth). Combine freely;
+  the pre-check rejects a line whose D10 count can't fit the weekdays that remain.
+  **Fri off** is additionally mutually exclusive with *Fri before Sat* (you can't
+  precede a Saturday with a Friday you never work) — the UI drops the latter when
+  it's set, and a loaded config with both is rejected by the pre-check.
 - **Work weekly:** ≥ 1 **weekday** shift in every **Mon–Fri business week**.
   Business weeks are *not* the Friday-anchored rotation week — see
   [§7](#7-business-weeks-the-work-weekly-subtlety).
@@ -148,7 +150,7 @@ three options; these dominate and behave like a priority order:
 |------|-------:|--------------|
 | `W_SHORTFALL` | **8000** | Penalty per **blank** shift. Dominant — fill coverage first. |
 | `W_THREE_OF_FOUR` | **1500** | Low-FTE nurses (< 0.30 FTE) should be active in ≥ 3 of every 4 weeks. |
-| `W_EXTRA` | **600** | Penalty per **over-staffed** slot (avoid needless extras). |
+| `W_EXTRA` (+`W_EXTRA_MIDWEEK`) | **600** (+**300** on Wed) | Penalty per **over-staffed** slot. The Wednesday surcharge pushes any unavoidable overage to **Monday or Friday** (the ends of the week). |
 
 The second tier is **per-option**: these weights change with the chosen profile,
 and **their relative order is not fixed** — re-ordering them is exactly what makes
@@ -156,8 +158,8 @@ the three options differ (see §6). Do not read this table as a global ranking.
 
 | Term | Pref. | Equity | Cluster | What it does |
 |------|------:|-------:|--------:|--------------|
-| `pref` | 900 | 60 | 60 | Honour each nurse's ticked preferences (off-days, spread Saturdays, clustering). |
-| `wd_equity` | 30 | 500 | 30 | Balance each weekday type across equal-FTE nurses and within each nurse. |
+| `pref` | 900 | 60 | 60 | Honour each nurse's ticked preferences (off-days, spread Saturdays, clustering, **even spread**). |
+| `wd_equity` | 30 | 500 | 30 | Balance each weekday type across equal-FTE nurses and within each nurse. A nurse who ticks **prefer even spread** gets `wd_equity + pref` on their own Mon/Wed/Fri balance, so they get an even week even when global equity is low. |
 | `sat_spread` | 30 | 350 | 30 | Space each nurse's Saturdays out (penalize back-to-back). |
 | `cluster_all` | 0 | 0 | 600 | Reward everyone's adjacent days off (longer blocks off). |
 | `pattern` | 250 | 250 | 150 | Keep each nurse's weekday pattern stable week to week (predictability). |
@@ -199,6 +201,12 @@ week with the first block's Friday. The schedule loops straight back into its ow
 start, so this is correct — and it stops the seam artefact where one end of the
 period gets a doubled-up week and the other an empty one. The "work weekly"
 guarantee (§4.5), its pre-check (§2) and the validator all group by this index.
+
+(The default start is Friday, but the index is computed purely from calendar
+dates, so it's correct for **any** start weekday — a Monday start, for instance,
+has no seam at all because each block's Mon/Wed/Fri already share one business
+week. Likewise *Fri before Sat* links each Saturday to the **calendar** Friday
+before it, not a block position, so it holds for any anchor too.)
 
 ---
 
@@ -282,7 +290,7 @@ Manual grid edits and swaps are re-validated live through the same function.
 | H8 | Job-share partners never share a day | Hard | §4.4 |
 | H9 | ≥ 1 Saturday per rolling 4 weeks | Hard | §4.3 |
 | — | Exact D10 / D5 counts | Hard | §4.2 |
-| — | Mon off / Fri off / Work weekly / Fri before Sat | Hard when ticked | §4.5 |
+| — | Mon/Wed/Fri off / Work weekly / Fri before Sat | Hard when ticked | §4.5 |
 
 ---
 
@@ -317,7 +325,7 @@ policy** or a **modeling interpretation**, so the compliance story is honest.
 | ≥ 1 Saturday per rolling 4 weeks ("a Saturday a month") | — | — | Hard constraint (H9) | **Unit policy, not contract** |
 | Job share: never the same day, combined ≤ 1.0 FTE | — | — | Hard constraints (H8 + precheck) | **Unit policy** |
 | Exact D10 / D5 counts per nurse | — | — | Hard | **Unit target** |
-| Mon off / Fri off / Work weekly / Fri before Sat | — | — | Hard when ticked | **Per-nurse opt-in, not contract** |
+| Mon/Wed/Fri off / Work weekly / Fri before Sat | — | — | Hard when ticked | **Per-nurse opt-in, not contract** |
 
 Note on 25.06(E): the contract sets a weekend **floor** (everyone gets weekends
 *off*); the tool's H2 cap enforces it, while H9 ("a Saturday a month") is a

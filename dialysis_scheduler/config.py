@@ -83,13 +83,26 @@ class Nurse:
     pref_off_mon: bool = False  # prefer Mondays off (SOFT; cf. fixed_off_mon HARD)
     pref_off_wed: bool = False  # prefer Wednesdays off
     pref_off_fri: bool = False  # prefer Fridays off
+    pref_even_spread: bool = False  # prefer shifts spread evenly across Mon/Wed/Fri
     # Fixed days off (HARD): the line is never scheduled this weekday.
     fixed_off_mon: bool = False  # never works a Monday
+    fixed_off_wed: bool = False  # never works a Wednesday
     fixed_off_fri: bool = False  # never works a Friday (excludes Fri-before-Sat)
     # Fixed cadence (HARD): the line works at least one weekday shift every week.
     fixed_work_weekly: bool = False  # never idle a whole week (weekdays count)
     # Fixed pairing (HARD): every worked Saturday is preceded by its Friday.
     fixed_fri_before_sat: bool = False  # if working a Saturday, work that Friday
+
+    def fixed_off_weekdays(self) -> set:
+        """Weekday codes (0=Mon, 2=Wed, 4=Fri) this line never works (HARD)."""
+        wd = set()
+        if self.fixed_off_mon:
+            wd.add(0)
+        if self.fixed_off_wed:
+            wd.add(2)
+        if self.fixed_off_fri:
+            wd.add(4)
+        return wd
 
     def tolerance(self, default: float) -> float:
         return self.fte_tolerance if self.fte_tolerance is not None else default

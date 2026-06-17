@@ -241,6 +241,23 @@ def test_fixed_off_fri_guaranteed():
     print(f"  fixed Fri off: Leslie works 0 of {len(fridays)} Fridays, all options")
 
 
+def test_fixed_off_wed_guaranteed():
+    """A nurse ticked 'Wed off (hard)' never works a Wednesday in any option."""
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Leslie":
+            n.fixed_off_wed = True
+    opts = generate_schedules(cfg)
+    op = build_operating_dates(cfg)
+    weds = [d.iso for d in op if d.weekday == 2]
+    for o in opts:
+        assert opts[0].feasible
+        assert not check_contract(cfg, o), o.label
+        worked = [d for d in weds if is_worked(o.assignments["Leslie"].get(d))]
+        assert not worked, f"{o.label}: Leslie worked Wednesdays {worked}"
+    print(f"  fixed Wed off: Leslie works 0 of {len(weds)} Wednesdays, all options")
+
+
 def test_fri_off_conflicts_with_fri_before_sat():
     """'Fri off' and 'Fri before Sat' are mutually exclusive -> clear rejection."""
     cfg = default_config(_friday())
