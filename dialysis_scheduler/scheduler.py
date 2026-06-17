@@ -113,6 +113,14 @@ SEARCH_WORKERS = 8  # portfolio workers per solve (LNS needs > 1); fine on 4 cor
 # without making the common case wait.
 PER_OPTION_SECONDS = 4.0  # wall-clock cap per option when producing several
 SINGLE_OPTION_SECONDS = 6.0  # a lone option can afford a little longer
+# Reproducible mode: a single worker with a *deterministic-time* stop is fully
+# bit-reproducible (multi-worker and wall-clock stops are not). Deterministic
+# time is a work-count unit, not seconds; ~6 finishes in well under a minute per
+# option even on the 18-week stress case. A generous wall-clock backstop guards
+# against a pathological hang (if ever hit it would break reproducibility, but
+# the deterministic stop lands first on normal hardware).
+DETERMINISTIC_TIME = 6.0
+DETERMINISTIC_WALL_BACKSTOP = 90.0
 RANDOM_SEED = 42
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
@@ -435,13 +443,25 @@ def _sat_cap_for_span(weeks: int, span_weeks: int) -> int:
     return int(math.floor(SAT_MAX_PER_9WK * span_weeks / SAT_WINDOW_WEEKS))
 
 
-def _solve_cpsat(
-    cfg: Config,
-    operating: list[OperatingDate],
-    profile: str = "preference",
-    seconds: float = SINGLE_OPTION_SECONDS,
-) -> ScheduleResult:
-    prof = OBJECTIVE_PROFILES[profile]
+@dataclass
+class _CoreModel:
+    """The hard-constraint CP-SAT model, shared by the full solve and the
+    minimal swap-repair. Everything here is HARD; callers add their own objective
+    on top of `x` and the coverage-relaxation terms."""
+    model: cp_model.CpModel
+    x: dict
+    st: dict
+    short_terms: list
+    extra_terms: list
+    worked_d10_target: dict
+    eff_stat: dict
+
+
+def _build_core_model(cfg: Config, operating: list[OperatingDate]) -> _CoreModel:
+    """Variables + every HARD constraint: coverage (relaxed to blanks only when
+    genuinely uncoverable), the Saturday caps (H2/H9), job share (H8), exact
+    D10/D5 counts, and the per-line fixed guarantees. The coverage relaxation
+    vars are returned so the caller can price blanks/extras in its objective."""
     model = cp_model.CpModel()
     nurses = cfg.nurses
     weeks = cfg.weeks
@@ -606,18 +626,9 @@ def _solve_cpsat(
             if window_vars:
                 model.Add(sum(window_vars) >= 1)
 
-    # --- Soft objective terms ---------------------------------------------
-    obj_terms = []
-
-    # Coverage: fill demand (minimize blanks) first, then avoid over-staffing.
-    for short in short_terms:
-        obj_terms.append(W_SHORTFALL * short)
-    for extra in extra_terms:
-        obj_terms.append(W_EXTRA * extra)
-
-    # 1. Shift-count matching (HARD): each line works exactly its requested
-    #    worked-D10 (target minus paid stat days) and D5 counts. Guaranteed in
-    #    every option -- the profiles only change which days fill those counts.
+    # Shift-count matching (HARD): each line works exactly its requested worked-D10
+    # (target minus paid stat days) and D5 counts -- identical in every option and
+    # in the swap-repair; only the *arrangement* ever changes.
     for ni, nurse in enumerate(nurses):
         d10_actual = sum(
             x[(ni, oi)]
@@ -631,6 +642,33 @@ def _solve_cpsat(
         )
         model.Add(d10_actual == worked_d10_target[ni])
         model.Add(d5_actual == nurse.target_d5)
+
+    return _CoreModel(model, x, st, short_terms, extra_terms,
+                      worked_d10_target, eff_stat)
+
+
+def _solve_cpsat(
+    cfg: Config,
+    operating: list[OperatingDate],
+    profile: str = "preference",
+    seconds: float = SINGLE_OPTION_SECONDS,
+    deterministic: bool = False,
+) -> ScheduleResult:
+    prof = OBJECTIVE_PROFILES[profile]
+    core = _build_core_model(cfg, operating)
+    model, x, st = core.model, core.x, core.st
+    worked_d10_target = core.worked_d10_target
+    nurses = cfg.nurses
+    weeks = cfg.weeks
+
+    # --- Soft objective terms ---------------------------------------------
+    obj_terms = []
+
+    # Coverage: fill demand (minimize blanks) first, then avoid over-staffing.
+    for short in core.short_terms:
+        obj_terms.append(W_SHORTFALL * short)
+    for extra in core.extra_terms:
+        obj_terms.append(W_EXTRA * extra)
 
     # 2. Weekday equity within FTE class (balance each weekday across equals).
     #    Weight depends on the option profile (high for "equity-maximizing").
@@ -816,12 +854,19 @@ def _solve_cpsat(
 
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = RANDOM_SEED
-    # Multi-worker portfolio under a wall-clock budget: the extra workers run
-    # CP-SAT's LNS, which improves the incumbent far faster than a single worker
-    # (so we get better schedules in less time). Not byte-reproducible, but every
-    # hard rule and exact shift count still holds.
-    solver.parameters.num_search_workers = SEARCH_WORKERS
-    solver.parameters.max_time_in_seconds = seconds
+    if deterministic:
+        # Bit-reproducible: a single worker stopped on DETERMINISTIC time (not
+        # wall-clock) gives an identical schedule for identical inputs. Slower and
+        # slightly lower secondary-quality, but every hard rule and exact count
+        # still holds. Wall-clock is only a safety backstop.
+        solver.parameters.num_search_workers = 1
+        solver.parameters.max_deterministic_time = DETERMINISTIC_TIME
+        solver.parameters.max_time_in_seconds = DETERMINISTIC_WALL_BACKSTOP
+    else:
+        # Multi-worker LNS under a wall-clock cap: far faster + higher-quality,
+        # but the real-time deadline makes it non-reproducible. Hard rules hold.
+        solver.parameters.num_search_workers = SEARCH_WORKERS
+        solver.parameters.max_time_in_seconds = seconds
     status = solver.Solve(model)
 
     status_name = solver.StatusName(status)
@@ -1049,13 +1094,17 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 # --- Public entry point ----------------------------------------------------
 
 
-def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
+def generate_schedules(cfg: Config, profiles=None,
+                       deterministic: bool = False) -> list[ScheduleResult]:
     """Generate one schedule per objective profile.
 
     By default three options -- preference-, equity- and cluster-maximizing.
     Each satisfies all hard constraints and hits the requested shift counts; the
     profiles differ in which secondary goal they push. Returns a single
     infeasible / greedy result in a one-item list if no CP-SAT solution exists.
+
+    `deterministic=True` solves single-worker so identical inputs reproduce the
+    exact same schedule (auditable), at some cost to speed/quality.
     """
     cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
     profiles = profiles or PROFILE_ORDER
@@ -1093,7 +1142,8 @@ def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
     # Solve the profiles sequentially: each solve already uses a multi-worker
     # portfolio that saturates the cores, so the old thread-per-profile parallel
     # layout would just oversubscribe and slow everything down.
-    raw = [_solve_cpsat(cfg, operating, profile=p, seconds=seconds) for p in profiles]
+    raw = [_solve_cpsat(cfg, operating, profile=p, seconds=seconds,
+                        deterministic=deterministic) for p in profiles]
 
     results = [r for r in raw if r.feasible]
     if not results:  # rare after the pre-checks -> best-effort greedy
@@ -1109,3 +1159,91 @@ def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
 def generate_schedule(cfg: Config) -> ScheduleResult:
     """Single best schedule (back-compat wrapper) -- the preference profile."""
     return generate_schedules(cfg, profiles=["preference"])[0]
+
+
+@dataclass
+class RepairResult:
+    ok: bool
+    assignments: dict = field(default_factory=dict)  # name -> {iso: code}
+    operating: list = field(default_factory=list)
+    changed: list = field(default_factory=list)  # human-readable cell changes
+    message: str = ""
+
+
+def reoptimize_to_fit(
+    cfg: Config,
+    operating: list[OperatingDate],
+    current: dict,
+    pins: list[tuple[str, str, bool]],
+    seconds: float = 4.0,
+) -> RepairResult:
+    """Find the schedule **closest** to `current` that honours `pins` and every
+    hard rule -- the "minimally re-optimize to fit" path for a swap the contract
+    would otherwise block.
+
+    `pins` are (nurse_name, iso_date, want_worked) the user insists on (e.g. the
+    two sides of a swap). Exact D10/D5 counts, Saturday caps, job share and the
+    fixed guarantees all still hold; the solver only shuffles *other* cells, and
+    minimizes how many it changes (Hamming distance to `current`). Returns
+    `ok=False` with a reason when even a minimal repair is impossible.
+    """
+    cfg.apply_derived_ftes()
+    name_to_ni = {n.name: i for i, n in enumerate(cfg.nurses)}
+    iso_to_oi = {od.iso: oi for oi, od in enumerate(operating)}
+
+    core = _build_core_model(cfg, operating)
+    model, x = core.model, core.x
+
+    # Apply the user's pins as HARD requirements.
+    for (name, iso, want) in pins:
+        ni = name_to_ni.get(name)
+        oi = iso_to_oi.get(iso)
+        if ni is None or oi is None:
+            return RepairResult(False, message="Unknown nurse or date in the request.")
+        if (ni, oi) in x:
+            model.Add(x[(ni, oi)] == (1 if want else 0))
+        elif want:
+            od = operating[oi]
+            why = ("they're marked unavailable that day"
+                   if iso in set(cfg.nurses[ni].unavailable_dates)
+                   else "a fixed guarantee (e.g. Mondays off) rules it out")
+            return RepairResult(
+                False,
+                message=f"Can't place {name} on {od.d.strftime('%a %d-%b')} — {why}.",
+            )
+
+    # Objective: keep coverage filled, then change as few cells as possible.
+    obj = []
+    for short in core.short_terms:
+        obj.append(W_SHORTFALL * short)
+    for extra in core.extra_terms:
+        obj.append(W_EXTRA * extra)
+    for (ni, oi), var in x.items():
+        worked_now = is_worked(current.get(cfg.nurses[ni].name, {}).get(operating[oi].iso))
+        obj.append((1 - var) if worked_now else var)  # penalize any difference
+
+    model.Minimize(sum(obj))
+
+    solver = cp_model.CpSolver()
+    solver.parameters.random_seed = RANDOM_SEED
+    solver.parameters.num_search_workers = SEARCH_WORKERS
+    solver.parameters.max_time_in_seconds = seconds
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+        return RepairResult(
+            False,
+            message="No compliant schedule keeps this swap, even after re-optimizing.",
+        )
+
+    new = _extract_assignments(cfg, operating, x, core.st, solver)
+
+    # Summarize what moved (worked cells only), for transparency.
+    changed = []
+    for nurse in cfg.nurses:
+        before = {i for i, c in current.get(nurse.name, {}).items() if is_worked(c)}
+        after = {i for i, c in new.get(nurse.name, {}).items() if is_worked(c)}
+        for iso in sorted(after - before):
+            changed.append(f"+ {nurse.name} {iso}")
+        for iso in sorted(before - after):
+            changed.append(f"- {nurse.name} {iso}")
+    return RepairResult(True, assignments=new, operating=operating, changed=changed)

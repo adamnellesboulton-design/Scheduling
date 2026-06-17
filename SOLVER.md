@@ -20,7 +20,7 @@ It treats each nurse's **requested shift counts as hard** (everyone works exactl
 their D10/D5 numbers) and the **scheduling rules as hard** — the contract weekend
 cap (25.06(E)) and max-consecutive-days, plus unit policies (a Saturday a month,
 job-share separation) and any opt-in per-nurse guarantees. The split between
-contract and unit policy is spelled out in §12. **Coverage is soft**: if the
+contract and unit policy is spelled out in §13. **Coverage is soft**: if the
 roster genuinely cannot fill a day, that shift is
 left **blank and flagged** rather than failing. Everything else — fairness,
 preferences, clustering — is a **soft objective** the solver maximizes. It runs
@@ -109,7 +109,7 @@ options — the options only rearrange *which* days fill those counts.
 ### 4.3 Saturday rules
 - **H2 — rolling weekend cap (25.06(E)):** ≤ 6 Saturdays in any 9-week window
   (proportional for shorter periods). Guarantees ≥ 1 weekend off in 3.
-- **H9 — a Saturday a month** *(unit policy, not contract — see §12)*: ≥ 1
+- **H9 — a Saturday a month** *(unit policy, not contract — see §13)*: ≥ 1
   Saturday in every rolling 4-week window, for everyone.
 
 ### 4.4 Job share — H8
@@ -210,9 +210,36 @@ Trade-off, stated plainly: multi-worker LNS is **not byte-reproducible**.
 different — equally compliant, equally count-exact — layout. Every hard rule and
 exact count still holds on every run.
 
+**Reproducible mode** (the "Reproducible (slower)" checkbox →
+`generate_schedules(deterministic=True)`): solves with **one worker** stopped on
+**deterministic time** (`DETERMINISTIC_TIME`, a work-count unit — *not*
+wall-clock) instead of the parallel wall-clock cap. That combination *is*
+bit-reproducible: the same roster yields the identical schedule every time, which
+is what you want for re-posting or audit. It is slower and the secondary quality
+(equity/clustering) is a touch lower, but the hard rules and exact counts are
+unchanged. (Note: single-worker alone is *not* enough — a wall-clock stop still
+cuts the search at a non-reproducible point; the deterministic-time stop is the
+key. Multi-worker stays non-reproducible even on deterministic time.)
+
 ---
 
-## 9. Stage G — fallback (rare)
+## 9. Minimal swap-repair ("reoptimize to fit")
+
+The grid's **Swap two shifts** tool only *applies* a straight swap when it stays
+within every hard rule; if the swap would break one (e.g. moving a nurse onto a
+Saturday their cap can't take, or onto a Monday they're guaranteed off), the plain
+swap is **blocked** and the UI offers **Reoptimize to fit** →
+`reoptimize_to_fit()`. That re-solves the **same hard model** (`_build_core_model`,
+shared with the main solve) with the two requested cells **pinned**, and an
+objective that minimizes the **Hamming distance** to the current schedule — so it
+keeps the swap, keeps every exact count and hard rule, and changes as few other
+cells as possible. If even that is impossible it returns a reason instead of a
+broken schedule. (Pinning a nurse onto a date they have no variable for — a fixed
+day off or an unavailable date — is refused outright.)
+
+---
+
+## 10. Stage G — fallback (rare)
 
 If, after the pre-checks pass, CP-SAT still finds no feasible solution for any
 profile (unusual), the generator:
@@ -224,7 +251,7 @@ profile (unusual), the generator:
 
 ---
 
-## 10. Stage H — independent validation
+## 11. Stage H — independent validation
 
 Whatever path produced the schedule, `validate()` **re-checks it from scratch**
 and is what the UI status banner and the Excel Compliance sheet report. It is a
@@ -236,7 +263,7 @@ Manual grid edits and swaps are re-validated live through the same function.
 
 ---
 
-## 11. Glossary of constraint IDs
+## 12. Glossary of constraint IDs
 
 | ID | Rule | Hard/Soft | Where |
 |----|------|-----------|-------|
@@ -252,14 +279,14 @@ Manual grid edits and swaps are re-validated live through the same function.
 
 ---
 
-## 12. Contract mapping (BCNU / NBA Provincial Collective Agreement)
+## 13. Contract mapping (BCNU / NBA Provincial Collective Agreement)
 
 This separates what the tool treats as a **contract rule** from what is **unit
 policy** or a **modeling interpretation**, so the compliance story is honest.
 
 > **Verification status.** The Article 25 (Work Schedules) and Article 26 (Hours
 > of Work) citations below were checked **against the 2022–2025 NBA Provincial
-> Collective Agreement text** and are confirmed (✓). One correction came out of
+> Collective Agreement text** and are confirmed (marked "verified"). One correction came out of
 > that check: **statutory holidays are *not* Article 17** — Art. 17 is the
 > Posting/Vacancies article (25.03 cross-references "17.01(B)" as the posting
 > cycle). The exact statutory-holiday article number is not in the Art. 25–26
@@ -269,17 +296,17 @@ policy** or a **modeling interpretation**, so the compliance story is honest.
 
 | Modeled as | Cited | Status | What the tool does | Category |
 |------------|-------|--------|--------------------|----------|
-| Full-time week = 37.5 h | 26.01 | ✓ | FTE = paid hours ÷ (37.5 × weeks) | Contract constant |
-| FTE flex band ± 0.08 | 25.03 | ✓ | Per-line FTE tolerance for the secondary check | Contract constant |
-| Master schedule posted ≥ 6 weeks ahead | 25.05 | ✓ | Warns if the start is < 42 days out | Contract (advisory) |
-| ≤ 6 consecutive days worked | 25.06(C) | ✓ | Structurally impossible here (longest run is Fri+Sat = 2); still validated | Contract |
-| Off-duty days consecutive | 25.06(D) | ✓ | Cannot be met on a Mon/Wed/Fri/Sat unit (isolated Tue/Thu closures); flagged as documented non-conformance, not solved | Contract (needs written agreement) |
-| Off ≥ 1 weekend in 3 per 9-week period (weekend = 2300 Fri–0700 Mon) | 25.06(E)(i) | ✓ | Enforced as ≤ 6 Saturdays per rolling 9-week window (H2) — the unit works only Saturdays, so "weekend worked" = "Saturday worked" | Contract |
-| Short-notice change overtime (< 10 days' notice) | 25.08 | ✓ | Flagged informationally, not priced | Contract (informational) |
-| Extended Work Day (D10 = 10 h > 7.5 h normal) | 25.11 / 26.01 | ✓ (memo separate) | Flagged; defers to your EWD Memorandum | Contract — confirm EWD memo |
-| Meal period: no > 5 consecutive hours without a break | 26.03(A) | ✓ | D10 meal must begin by 1230; D5 = exactly 5 h, so no meal required | Contract |
-| Rest periods: 2×15 min full shift, 1×15 min if ≥ 4 h | 26.04 | ✓ | Informational note on the schedule | Contract (informational) |
-| Statutory holidays | (stat-holidays article — **not** Art. 17; number TBC) | ⚠ number | 13 BC stats; an ST day is paid, replaces a worked D10, placed on the real holiday date | Contract — confirm article no. |
+| Full-time week = 37.5 h | 26.01 | verified | FTE = paid hours ÷ (37.5 × weeks) | Contract constant |
+| FTE flex band ± 0.08 | 25.03 | verified | Per-line FTE tolerance for the secondary check | Contract constant |
+| Master schedule posted ≥ 6 weeks ahead | 25.05 | verified | Warns if the start is < 42 days out | Contract (advisory) |
+| ≤ 6 consecutive days worked | 25.06(C) | verified | Structurally impossible here (longest run is Fri+Sat = 2); still validated | Contract |
+| Off-duty days consecutive | 25.06(D) | verified | Cannot be met on a Mon/Wed/Fri/Sat unit (isolated Tue/Thu closures); flagged as documented non-conformance, not solved | Contract (needs written agreement) |
+| Off ≥ 1 weekend in 3 per 9-week period (weekend = 2300 Fri–0700 Mon) | 25.06(E)(i) | verified | Enforced as ≤ 6 Saturdays per rolling 9-week window (H2) — the unit works only Saturdays, so "weekend worked" = "Saturday worked" | Contract |
+| Short-notice change overtime (< 10 days' notice) | 25.08 | verified | Flagged informationally, not priced | Contract (informational) |
+| Extended Work Day (D10 = 10 h > 7.5 h normal) | 25.11 / 26.01 | verified (memo separate) | Flagged; defers to your EWD Memorandum | Contract — confirm EWD memo |
+| Meal period: no > 5 consecutive hours without a break | 26.03(A) | verified | D10 meal must begin by 1230; D5 = exactly 5 h, so no meal required | Contract |
+| Rest periods: 2×15 min full shift, 1×15 min if ≥ 4 h | 26.04 | verified | Informational note on the schedule | Contract (informational) |
+| Statutory holidays | (stat-holidays article — **not** Art. 17; number TBC) | verify no. | 13 BC stats; an ST day is paid, replaces a worked D10, placed on the real holiday date | Contract — confirm article no. |
 | ≥ 1 Saturday per rolling 4 weeks ("a Saturday a month") | — | — | Hard constraint (H9) | **Unit policy, not contract** |
 | Job share: never the same day, combined ≤ 1.0 FTE | — | — | Hard constraints (H8 + precheck) | **Unit policy** |
 | Exact D10 / D5 counts per nurse | — | — | Hard | **Unit target** |

@@ -105,9 +105,15 @@ python tests/test_profiles.py     # the three options each do their job
 - **Click a cell** in the grid to change it — pick the day's shift code to staff
   it or blank for off. (Streamlit can't do drag-and-drop; click-to-edit is the
   direct equivalent.)
-- **Swap two shifts** — pick Shift A and Shift B; **a confirmation appears**, and
-  on confirm the two nurses trade days (counts/coverage preserved; swapping onto
-  an unavailable date is blocked).
+- **Swap two shifts** — pick Shift A and Shift B; a confirmation previews the
+  compliance impact. A swap that stays within every hard (union) rule applies on
+  confirm; a swap that would **break** one is **blocked** and instead offers
+  **Reoptimize to fit** — the solver keeps your swap, holds every exact count and
+  rule, and minimally shuffles other cells to make it compliant (or tells you when
+  even that's impossible). Counts are always preserved.
+- **Reproducible mode** (checkbox by Generate) — solve single-threaded on
+  deterministic time so the same roster reproduces the identical schedule (for
+  re-posting / audit); slower, slightly lower secondary quality. Off by default.
 - **Reset to generated** — discard manual edits.
 
 Everything **re-validates live** — the status banner and compliance report update

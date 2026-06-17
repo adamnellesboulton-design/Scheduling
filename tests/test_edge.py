@@ -161,6 +161,65 @@ def test_job_share_both_stat_off_not_flagged():
     assert js_rule.status == "PASS", js_rule.detail
 
 
+def test_reoptimize_refuses_hard_violation():
+    """reoptimize_to_fit must REFUSE (not silently allow) a pin that breaks a
+    hard guarantee -- e.g. placing a Mon-off nurse on a Monday."""
+    from dialysis_scheduler.scheduler import generate_schedule, reoptimize_to_fit
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Kathleen":
+            n.fixed_off_mon = True
+    r = generate_schedule(cfg)
+    monday = next(od.iso for od in r.operating if od.weekday == 0)
+    rep = reoptimize_to_fit(cfg, r.operating, r.assignments,
+                            [("Kathleen", monday, True)], seconds=3.0)
+    assert not rep.ok
+    assert "Kathleen" in rep.message
+
+
+def test_reoptimize_keeps_schedule_compliant():
+    """A valid pinned move re-optimizes to a fully compliant schedule that still
+    hits every nurse's exact counts and honours the pin."""
+    from dataclasses import replace
+    from dialysis_scheduler.scheduler import generate_schedule, reoptimize_to_fit
+    from dialysis_scheduler.model import is_worked
+    cfg = default_config(_friday())
+    r = generate_schedule(cfg)
+    op = r.operating
+    # A Wednesday Kaitlyn does not currently work -> pin her onto it.
+    wed = next(od for od in op if od.weekday == 2
+               and not is_worked(r.assignments["Kaitlyn"].get(od.iso)))
+    rep = reoptimize_to_fit(cfg, op, r.assignments,
+                            [("Kaitlyn", wed.iso, True)], seconds=4.0)
+    assert rep.ok, rep.message
+    assert is_worked(rep.assignments["Kaitlyn"].get(wed.iso))  # pin honoured
+    report = validate(cfg, replace(r, assignments=rep.assignments))
+    fails = [x.rule for x in report.rules if x.status == "FAIL"]
+    assert not fails, fails
+    # Exact counts preserved.
+    for s in report.nurse_summaries:
+        assert s.scheduled_d10 == s.target_d10 and s.scheduled_d5 == s.target_d5
+
+
+def test_reproducible_mode_repeats():
+    """deterministic=True yields a byte-identical schedule on re-run; the default
+    fast mode is not required to."""
+    from dialysis_scheduler.scheduler import generate_schedules
+    cfg = default_config(_friday())
+    cfg.weeks = 6  # keep the test quick
+    scale = 6 / 12
+    for n in cfg.nurses:
+        n.target_d10 = max(1, round(n.target_d10 * scale))
+        n.target_d5 = max(1, round(n.target_d5 * scale))
+
+    def sig(opts):
+        return [tuple(sorted((nm, tuple(sorted(d.items())))
+                             for nm, d in o.assignments.items())) for o in opts]
+    a = sig(generate_schedules(cfg, deterministic=True))
+    b = sig(generate_schedules(cfg, deterministic=True))
+    assert a == b, "reproducible mode must repeat exactly"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -84,14 +84,23 @@ Helpers: `_sat_window_bounds(weeks)`, `_sat_cap_for_span(weeks, span)`,
 `_h9_min_saturdays(weeks)` (greedy hitting set), `_period_max_saturdays(weeks)`
 (`{6:4,9:6,12:9,18:12,24:18}`), `half_hours(h)` (CP-SAT is integer; hours ×2).
 
-Model + solve: `_solve_cpsat(cfg, operating, profile, seconds)` builds the
-model, sets `OBJECTIVE_PROFILES[profile]` weights, solves with a multi-worker
-portfolio under a wall-clock budget, returns a `ScheduleResult(label=profile_label)`.
+Model + solve:
+- `_build_core_model(cfg, operating) -> _CoreModel(model, x, st, short_terms,
+  extra_terms, worked_d10_target, eff_stat)` — variables + **every hard
+  constraint** (coverage relaxation, H2/H9, job share, exact counts, fixed
+  guarantees). Shared by the full solve and the swap-repair.
+- `_solve_cpsat(cfg, operating, profile, seconds, deterministic=False)` — calls
+  `_build_core_model`, adds the `OBJECTIVE_PROFILES[profile]` soft weights, solves.
+  `deterministic=True` → single worker + `max_deterministic_time` (bit-reproducible).
+- `reoptimize_to_fit(cfg, operating, current, pins, seconds)` — the **minimal
+  swap-repair**: `_build_core_model` + pins (hard) + a Hamming-distance objective
+  to `current`; returns `RepairResult(ok, assignments, changed, message)`. Refuses
+  a pin onto a non-existent var (fixed day off / unavailable).
 
 Entry points:
-- `generate_schedules(cfg, profiles=PROFILE_ORDER)` → integrity → pre-checks →
-  one `_solve_cpsat` per profile → list of results (or `[infeasible]` /
-  `[greedy]`).
+- `generate_schedules(cfg, profiles=PROFILE_ORDER, deterministic=False)` →
+  integrity → pre-checks → one `_solve_cpsat` per profile → list of results (or
+  `[infeasible]` / `[greedy]`).
 - `generate_schedule(cfg)` → `generate_schedules(cfg, ["preference"])[0]`.
 
 `ScheduleResult(feasible, method, status, assignments, operating, messages,
