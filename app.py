@@ -148,6 +148,32 @@ def _cfg() -> Config:
     return st.session_state.cfg
 
 
+def _cfg_signature(cfg: Config) -> tuple:
+    """A hashable summary of every input that affects the schedule. Used to detect
+    when the live config has drifted from the one a set of options was built on."""
+    return (
+        cfg.start_date,
+        cfg.weeks,
+        tuple(sorted(cfg.demand.items())),
+        tuple(sorted(
+            (str(k), tuple(sorted(v.items())))
+            for k, v in (cfg.weekly_demand_override or {}).items()
+        )),
+        tuple(
+            (
+                n.name, n.target_d10, n.target_d5, n.stat_days,
+                n.job_share_group,
+                n.fixed_off_mon, n.fixed_off_wed, n.fixed_off_fri,
+                n.fixed_work_weekly, n.fixed_fri_before_sat,
+                n.pref_off_mon, n.pref_off_wed, n.pref_off_fri,
+                n.pref_even_spread, n.pref_nonconsec_sat, n.pref_clustered,
+                tuple(sorted(n.unavailable_dates)),
+            )
+            for n in cfg.nurses
+        ),
+    )
+
+
 # --- sidebar ---------------------------------------------------------------
 
 
@@ -254,16 +280,21 @@ def roster_editor():
         "Give two nurses the same **Job share** label to split one line (they "
         "never work the same day). Everyone works at least one Saturday a month. "
         "Seniority is not used to build the schedule — nurses pick by seniority "
-        "afterward."
+        "afterward. The everyday fields are on the left; **scroll right** for the "
+        "optional per-nurse guarantee and preference tick-boxes (all off by default)."
     )
 
     rows = []
     for n in cfg.nurses:
+        # Column order = edit frequency: the everyday fields (counts, leave, job
+        # share) come first; the optional hard guarantees then soft preferences
+        # follow, so a user only scrolls right when they need a flag.
         row = {
             "name": n.name,
             "d10": int(n.target_d10),
             "d5": int(n.target_d5),
             "stat": int(n.stat_days),
+            "unavailable_dates": ", ".join(n.unavailable_dates),
             "job_share": n.job_share_group,
             "fixed_off_mon": n.fixed_off_mon,
             "fixed_off_wed": n.fixed_off_wed,
@@ -276,7 +307,6 @@ def roster_editor():
             "pref_even_spread": n.pref_even_spread,
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
-            "unavailable_dates": ", ".join(n.unavailable_dates),
         }
         if not SHOW_STAT_HOLIDAYS:
             row.pop("stat")
@@ -398,7 +428,15 @@ def roster_editor():
                 return int(round(float(v)))
             except (TypeError, ValueError):
                 return default
-        off_fri = bool(r.get("fixed_off_fri", False))
+
+        def _flag(key):
+            # Robust to missing cells and pandas NaN (note: bool(float('nan')) is
+            # True, and new dynamic rows can carry NaN), so an unchecked box never
+            # silently reads as ticked.
+            v = r.get(key, False)
+            return bool(v) if v == v else False
+
+        off_fri = _flag("fixed_off_fri")
         new_nurses.append(Nurse(
             name=name,
             target_d10=_int(r.get("d10")),
@@ -406,18 +444,18 @@ def roster_editor():
             stat_days=_int(r.get("stat")),
             unavailable_dates=dates,
             job_share_group=str(r.get("job_share") or "").strip(),
-            pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
-            pref_clustered=bool(r["pref_clustered"]),
-            fixed_off_mon=bool(r.get("fixed_off_mon", False)),
-            fixed_off_wed=bool(r.get("fixed_off_wed", False)),
+            pref_nonconsec_sat=_flag("pref_nonconsec_sat"),
+            pref_clustered=_flag("pref_clustered"),
+            fixed_off_mon=_flag("fixed_off_mon"),
+            fixed_off_wed=_flag("fixed_off_wed"),
             fixed_off_fri=off_fri,
-            fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
+            fixed_work_weekly=_flag("fixed_work_weekly"),
             # 'Fri off' overrides 'Fri before Sat' (they conflict).
-            fixed_fri_before_sat=bool(r.get("fixed_fri_before_sat", False)) and not off_fri,
-            pref_off_mon=bool(r.get("pref_off_mon", False)),
-            pref_off_wed=bool(r["pref_off_wed"]),
-            pref_off_fri=bool(r["pref_off_fri"]),
-            pref_even_spread=bool(r.get("pref_even_spread", False)),
+            fixed_fri_before_sat=_flag("fixed_fri_before_sat") and not off_fri,
+            pref_off_mon=_flag("pref_off_mon"),
+            pref_off_wed=_flag("pref_off_wed"),
+            pref_off_fri=_flag("pref_off_fri"),
+            pref_even_spread=_flag("pref_even_spread"),
         ))
     cfg.nurses = new_nurses
     cfg.apply_derived_ftes()
@@ -546,7 +584,12 @@ def generate_section():
 
     # Compliance reminders, tucked away to keep the action area clean.
     lead_days = (cfg.start - date.today()).days
-    if lead_days < 42:
+    if lead_days < 0:
+        st.warning(
+            f"25.05 posting: the start date is **{-lead_days} day(s) in the past**. "
+            "The master schedule must be posted 6 weeks in advance."
+        )
+    elif lead_days < 42:
         st.warning(
             f"25.05 posting: schedule starts in {lead_days} day(s) (< 6 weeks). "
             "The master schedule must be posted 6 weeks in advance."
@@ -575,6 +618,11 @@ def generate_section():
         with st.spinner("Solving three options…"):
             options = generate_schedules(cfg)
         st.session_state.options = options
+        # Snapshot the exact config these options were built from, so the results
+        # below stay internally consistent even if the user then tweaks the roster
+        # or sidebar before regenerating (otherwise validation/metrics/download
+        # would mix the new config with the old schedule).
+        st.session_state["gen_cfg"] = copy.deepcopy(cfg)
         # Fresh working copies of each option's assignments (manual edits live
         # here); drop any prior edits / widget state when regenerating.
         st.session_state["work"] = {
@@ -594,6 +642,16 @@ def generate_section():
                 "**Generate three options**.")
         return
 
+    # Render everything below against the config the options were generated from
+    # (not the live, possibly-edited cfg) so the schedule, validation, summary and
+    # download always agree. A banner flags when the live settings have drifted.
+    gcfg = st.session_state.get("gen_cfg", cfg)
+    if _cfg_signature(cfg) != _cfg_signature(gcfg):
+        st.warning("The roster or parameters have changed since these options "
+                   "were generated. The schedules below reflect the **previous** "
+                   "settings — press **Generate three options** to apply your "
+                   "changes.")
+
     first = options[0]
     if not first.feasible and first.method == "none":
         st.error("**No feasible schedule** — nothing generated.")
@@ -607,18 +665,18 @@ def generate_section():
         for m in options[0].messages:
             st.markdown(f"- {m}")
 
-    # At-a-glance figures for the run.
-    op = build_operating_dates(cfg)
+    # At-a-glance figures for the run (from the generation snapshot).
+    op = build_operating_dates(gcfg)
     wd_shifts = sum(o.demand for o in op if not o.is_saturday)
     sat_shifts = sum(o.demand for o in op if o.is_saturday)
     ncols = 5 if SHOW_STAT_HOLIDAYS else 4
     m = st.columns(ncols)
     m[0].metric("Options", len(options))
-    m[1].metric("Weeks", cfg.weeks)
+    m[1].metric("Weeks", gcfg.weeks)
     m[2].metric("Weekday shifts", wd_shifts)
     m[3].metric("Saturday shifts", sat_shifts)
     if SHOW_STAT_HOLIDAYS:
-        n_stats = len(holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks)))
+        n_stats = len(holidays_in_range(gcfg.start, gcfg.start + timedelta(weeks=gcfg.weeks)))
         m[4].metric("Stat holidays", n_stats)
     st.caption("Compare the options in the tabs below, then download your pick.")
 
@@ -626,7 +684,7 @@ def generate_section():
     tabs = st.tabs(labels)
     for i, (tab, opt) in enumerate(zip(tabs, options)):
         with tab:
-            _render_option(cfg, opt, i)
+            _render_option(gcfg, opt, i)
 
 
 PROFILE_DESC = {

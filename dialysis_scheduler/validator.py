@@ -518,7 +518,13 @@ def validate(cfg: Config, result) -> ValidationReport:
     # --- 25.05 posting check ----------------------------------------------
     today = date.today()
     lead_days = (cfg.start - today).days
-    if lead_days < 42:
+    if lead_days < 0:
+        posting_status = "WARN"
+        posting_detail = (
+            f"Start date is {-lead_days} day(s) in the past. 25.05 requires posting "
+            "6 weeks in advance."
+        )
+    elif lead_days < 42:
         posting_status = "WARN"
         posting_detail = (
             f"Schedule starts in {lead_days} day(s) (< 6 weeks). 25.05 requires "
