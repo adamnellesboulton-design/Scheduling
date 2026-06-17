@@ -106,14 +106,13 @@ python tests/test_profiles.py     # the three options each do their job
   it or blank for off. (Streamlit can't do drag-and-drop; click-to-edit is the
   direct equivalent.)
 - **Swap two shifts** — pick Shift A and Shift B; a confirmation previews the
-  compliance impact. A swap that stays within every hard (union) rule applies on
-  confirm; a swap that would **break** one is **blocked** and instead offers
-  **Reoptimize to fit** — the solver keeps your swap, holds every exact count and
-  rule, and minimally shuffles other cells to make it compliant (or tells you when
-  even that's impossible). Counts are always preserved.
-- **Reproducible mode** (checkbox by Generate) — solve single-threaded on
-  deterministic time so the same roster reproduces the identical schedule (for
-  re-posting / audit); slower, slightly lower secondary quality. Off by default.
+  compliance impact. A swap that would break a **union/contract** rule (25.06(E)
+  weekend cap, 25.06(C) max-consecutive, approved leave) is **blocked**; one that
+  only trips a **unit policy** (job share, a-Saturday-a-month) is **allowed with a
+  flag** — *Apply anyway* or reoptimize. Either way **Reoptimize to fit** keeps
+  your swap, holds every exact count and rule, and minimally shuffles other cells
+  to stay compliant (or tells you when even that's impossible). Counts are always
+  preserved.
 - **Reset to generated** — discard manual edits.
 
 Everything **re-validates live** — the status banner and compliance report update

@@ -201,25 +201,6 @@ def test_reoptimize_keeps_schedule_compliant():
         assert s.scheduled_d10 == s.target_d10 and s.scheduled_d5 == s.target_d5
 
 
-def test_reproducible_mode_repeats():
-    """deterministic=True yields a byte-identical schedule on re-run; the default
-    fast mode is not required to."""
-    from dialysis_scheduler.scheduler import generate_schedules
-    cfg = default_config(_friday())
-    cfg.weeks = 6  # keep the test quick
-    scale = 6 / 12
-    for n in cfg.nurses:
-        n.target_d10 = max(1, round(n.target_d10 * scale))
-        n.target_d5 = max(1, round(n.target_d5 * scale))
-
-    def sig(opts):
-        return [tuple(sorted((nm, tuple(sorted(d.items())))
-                             for nm, d in o.assignments.items())) for o in opts]
-    a = sig(generate_schedules(cfg, deterministic=True))
-    b = sig(generate_schedules(cfg, deterministic=True))
-    assert a == b, "reproducible mode must repeat exactly"
-
-
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

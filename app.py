@@ -515,14 +515,6 @@ def generate_section():
         "parameters and roster above. Same counts and rules in each; only the "
         "arrangement differs."
     )
-    reproducible = st.checkbox(
-        "Reproducible mode (slower)",
-        value=st.session_state.get("reproducible", False),
-        help="Solve single-threaded so the same roster always reproduces the "
-             "exact same schedule (useful for re-posting / audit). Off = faster "
-             "and higher-quality, but re-runs can differ slightly.",
-    )
-    st.session_state["reproducible"] = reproducible
     if st.button("Generate three options", type="primary", width="stretch"):
         if cfg.start.weekday() != 4:
             st.error("Start date must be a Friday. Fix it in the sidebar.")
@@ -531,7 +523,7 @@ def generate_section():
             st.error("Add at least one nurse to the roster.")
             return
         with st.spinner("Solving three options…"):
-            options = generate_schedules(cfg, deterministic=reproducible)
+            options = generate_schedules(cfg)
         st.session_state.options = options
         # Fresh working copies of each option's assignments (manual edits live
         # here); drop any prior edits / widget state when regenerating.
@@ -611,6 +603,19 @@ GUARANTEES = (
     "The three options differ **only** in how those fixed shifts are arranged "
     "across the calendar — never in how many each nurse works."
 )
+
+
+def _swap_hard_blocks(rule) -> bool:
+    """Whether a failing rule must HARD-block a manual swap.
+
+    Only genuine **union/contract** rules block: the collective-agreement
+    articles (25.x / 26.x — e.g. the 25.06(E) weekend cap, 25.06(C) max
+    consecutive days) and approved-leave (H3). Everything else is **unit policy**
+    (job share, a-Saturday-a-month, work-weekly, count targets) and is treated as
+    soft for a swap — a warning the scheduler can override.
+    """
+    c = rule.citation
+    return "25." in c or "26." in c or "(H3)" in c
 
 
 def _render_option(cfg: Config, opt, idx: int):
@@ -702,47 +707,68 @@ def _render_option(cfg: Config, opt, idx: int):
             trial = copy.deepcopy(assignments)
             _do_swap(trial, (A[1], A[2]), (B[1], B[2]), operating)
             trep = validate(cfg, replace(opt, assignments=trial))
-            tfail = [r.rule for r in trep.rules if r.status == "FAIL"]
+            fails = [r for r in trep.rules if r.status == "FAIL"]
+            hard_fail = [r.rule for r in fails if _swap_hard_blocks(r)]
+            soft_fail = [r.rule for r in fails if not _swap_hard_blocks(r)]
             twarn = [r.rule for r in trep.rules if r.status == "WARN"
                      and not r.rule.startswith("Daily coverage")]
-            # The straight swap is only OFFERED when it stays within every hard
-            # (union) rule. If it would break one, it is BLOCKED -- instead we
-            # offer to minimally re-optimize the rest of the schedule to fit it.
-            if tfail:
+            review = soft_fail + twarn + (
+                [f"{trep.unfilled_shifts} blank shift(s)"]
+                if trep.unfilled_shifts else [])
+
+            def _do_reoptimize():
+                pins = [(A[1], A[2], False), (A[1], B[2], True),
+                        (B[1], B[2], False), (B[1], A[2], True)]
+                with st.spinner("Finding the closest compliant schedule…"):
+                    rep = reoptimize_to_fit(cfg, operating, assignments, pins)
+                if rep.ok:
+                    work[idx] = rep.assignments
+                    st.session_state.pop(pend_key, None)
+                    gridver[idx] += 1
+                    st.success("Done — kept the swap and stayed compliant by "
+                               f"adjusting {len(rep.changed)} other shift(s).")
+                else:
+                    st.error(rep.message)
+
+            def _do_plain():
+                msg = _do_swap(assignments, (A[1], A[2]), (B[1], B[2]), operating)
+                st.session_state.pop(pend_key, None)
+                gridver[idx] += 1  # remount the grid with the swapped data
+                if msg:
+                    st.warning(msg)
+
+            # Only genuine UNION (contract) rules hard-block the swap; unit-policy
+            # issues are soft -- allowed with a flag, or fixable via reoptimize.
+            if hard_fail:
                 st.error("This swap would **break a union rule** ("
-                         + "; ".join(tfail) + "), so it can't be applied as-is.")
+                         + "; ".join(hard_fail) + "), so it can't be applied "
+                         "as-is. Reoptimize to keep the swap and stay compliant.")
                 cc1, cc2 = st.columns(2)
                 if cc1.button("Reoptimize to fit", key=f"reopt_{idx}",
                               type="primary", width="stretch"):
-                    pins = [(A[1], A[2], False), (A[1], B[2], True),
-                            (B[1], B[2], False), (B[1], A[2], True)]
-                    with st.spinner("Finding the closest compliant schedule…"):
-                        rep = reoptimize_to_fit(cfg, operating, assignments, pins)
-                    if rep.ok:
-                        work[idx] = rep.assignments
-                        st.session_state.pop(pend_key, None)
-                        gridver[idx] += 1
-                        st.success(f"Done — kept the swap and stayed compliant by "
-                                   f"adjusting {len(rep.changed)} other shift(s).")
-                    else:
-                        st.error(rep.message)
+                    _do_reoptimize()
                 if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
                     st.session_state.pop(pend_key, None)
+            elif review:
+                st.warning("This swap is allowed but would leave a **unit-policy** "
+                           "issue to review: " + "; ".join(review)
+                           + ". Apply it anyway, or reoptimize to keep everything "
+                           "clean.")
+                cc1, cc2, cc3 = st.columns(3)
+                if cc1.button("Apply anyway", key=f"confirm_{idx}",
+                              type="primary", width="stretch"):
+                    _do_plain()
+                if cc2.button("Reoptimize to fit", key=f"reopt_{idx}",
+                              width="stretch"):
+                    _do_reoptimize()
+                if cc3.button("Cancel", key=f"cancel_{idx}", width="stretch"):
+                    st.session_state.pop(pend_key, None)
             else:
-                if twarn or trep.unfilled_shifts:
-                    bits = ([f"{trep.unfilled_shifts} blank shift(s)"]
-                            if trep.unfilled_shifts else []) + twarn
-                    st.warning("After this swap, to review: " + "; ".join(bits))
-                else:
-                    st.success("After this swap the schedule stays fully compliant.")
+                st.success("After this swap the schedule stays fully compliant.")
                 cc1, cc2 = st.columns(2)
                 if cc1.button("Confirm swap", key=f"confirm_{idx}",
                               type="primary", width="stretch"):
-                    msg = _do_swap(assignments, (A[1], A[2]), (B[1], B[2]), operating)
-                    st.session_state.pop(pend_key, None)
-                    gridver[idx] += 1  # remount the grid with the swapped data
-                    if msg:
-                        st.warning(msg)
+                    _do_plain()
                 if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
                     st.session_state.pop(pend_key, None)
 

@@ -207,35 +207,32 @@ keep polishing.
 
 Trade-off, stated plainly: multi-worker LNS is **not byte-reproducible**.
 `random_seed = 42` is set, but re-running identical inputs can yield a slightly
-different — equally compliant, equally count-exact — layout. Every hard rule and
-exact count still holds on every run.
-
-**Reproducible mode** (the "Reproducible (slower)" checkbox →
-`generate_schedules(deterministic=True)`): solves with **one worker** stopped on
-**deterministic time** (`DETERMINISTIC_TIME`, a work-count unit — *not*
-wall-clock) instead of the parallel wall-clock cap. That combination *is*
-bit-reproducible: the same roster yields the identical schedule every time, which
-is what you want for re-posting or audit. It is slower and the secondary quality
-(equity/clustering) is a touch lower, but the hard rules and exact counts are
-unchanged. (Note: single-worker alone is *not* enough — a wall-clock stop still
-cuts the search at a non-reproducible point; the deterministic-time stop is the
-key. Multi-worker stays non-reproducible even on deterministic time.)
+different — equally compliant, equally count-exact — layout. There is a single
+generation path (always best-quality multi-worker); reproducibility would require
+a single worker on a deterministic-time stop, which produces a measurably worse
+schedule, so it is deliberately not offered.
 
 ---
 
 ## 9. Minimal swap-repair ("reoptimize to fit")
 
-The grid's **Swap two shifts** tool only *applies* a straight swap when it stays
-within every hard rule; if the swap would break one (e.g. moving a nurse onto a
-Saturday their cap can't take, or onto a Monday they're guaranteed off), the plain
-swap is **blocked** and the UI offers **Reoptimize to fit** →
-`reoptimize_to_fit()`. That re-solves the **same hard model** (`_build_core_model`,
-shared with the main solve) with the two requested cells **pinned**, and an
-objective that minimizes the **Hamming distance** to the current schedule — so it
-keeps the swap, keeps every exact count and hard rule, and changes as few other
-cells as possible. If even that is impossible it returns a reason instead of a
-broken schedule. (Pinning a nurse onto a date they have no variable for — a fixed
-day off or an unavailable date — is refused outright.)
+The grid's **Swap two shifts** tool previews each swap's compliance impact, with
+a deliberate split between **contract** rules and **unit policy**:
+
+- A swap that would break a **union/contract** rule — the 25.06(E) weekend cap,
+  25.06(C) max-consecutive, or an approved-leave/unavailable date — is **blocked**.
+- A swap that only trips a **unit-policy** rule — job share (H8), a-Saturday-a-
+  month (H9), the count target — is **allowed with a flag**; the scheduler can
+  *Apply anyway* (their judgement) or reoptimize to keep it clean.
+
+Either way the UI offers **Reoptimize to fit** → `reoptimize_to_fit()`, which
+re-solves the **same hard model** (`_build_core_model`, shared with the main
+solve) with the two requested cells **pinned**, minimizing the **Hamming
+distance** to the current schedule — so it keeps the swap, keeps every exact count
+and *every* hard rule (contract and unit policy), and changes as few other cells
+as possible. If even that is impossible it returns a reason instead of a broken
+schedule. (Pinning a nurse onto a date they have no variable for — a fixed day off
+or an unavailable date — is refused outright.)
 
 ---
 

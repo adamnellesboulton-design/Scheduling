@@ -113,14 +113,6 @@ SEARCH_WORKERS = 8  # portfolio workers per solve (LNS needs > 1); fine on 4 cor
 # without making the common case wait.
 PER_OPTION_SECONDS = 4.0  # wall-clock cap per option when producing several
 SINGLE_OPTION_SECONDS = 6.0  # a lone option can afford a little longer
-# Reproducible mode: a single worker with a *deterministic-time* stop is fully
-# bit-reproducible (multi-worker and wall-clock stops are not). Deterministic
-# time is a work-count unit, not seconds; ~6 finishes in well under a minute per
-# option even on the 18-week stress case. A generous wall-clock backstop guards
-# against a pathological hang (if ever hit it would break reproducibility, but
-# the deterministic stop lands first on normal hardware).
-DETERMINISTIC_TIME = 6.0
-DETERMINISTIC_WALL_BACKSTOP = 90.0
 RANDOM_SEED = 42
 
 # H2: max Saturdays per rolling 9-week window (>= 1 weekend off in 3).
@@ -652,7 +644,6 @@ def _solve_cpsat(
     operating: list[OperatingDate],
     profile: str = "preference",
     seconds: float = SINGLE_OPTION_SECONDS,
-    deterministic: bool = False,
 ) -> ScheduleResult:
     prof = OBJECTIVE_PROFILES[profile]
     core = _build_core_model(cfg, operating)
@@ -854,19 +845,12 @@ def _solve_cpsat(
 
     solver = cp_model.CpSolver()
     solver.parameters.random_seed = RANDOM_SEED
-    if deterministic:
-        # Bit-reproducible: a single worker stopped on DETERMINISTIC time (not
-        # wall-clock) gives an identical schedule for identical inputs. Slower and
-        # slightly lower secondary-quality, but every hard rule and exact count
-        # still holds. Wall-clock is only a safety backstop.
-        solver.parameters.num_search_workers = 1
-        solver.parameters.max_deterministic_time = DETERMINISTIC_TIME
-        solver.parameters.max_time_in_seconds = DETERMINISTIC_WALL_BACKSTOP
-    else:
-        # Multi-worker LNS under a wall-clock cap: far faster + higher-quality,
-        # but the real-time deadline makes it non-reproducible. Hard rules hold.
-        solver.parameters.num_search_workers = SEARCH_WORKERS
-        solver.parameters.max_time_in_seconds = seconds
+    # Multi-worker LNS under a wall-clock cap: the extra workers improve the
+    # incumbent far faster than a single worker. The real-time deadline makes it
+    # non-byte-reproducible, but every hard rule and exact count holds, so re-runs
+    # are equally valid -- only the arrangement may differ slightly.
+    solver.parameters.num_search_workers = SEARCH_WORKERS
+    solver.parameters.max_time_in_seconds = seconds
     status = solver.Solve(model)
 
     status_name = solver.StatusName(status)
@@ -1094,17 +1078,13 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
 # --- Public entry point ----------------------------------------------------
 
 
-def generate_schedules(cfg: Config, profiles=None,
-                       deterministic: bool = False) -> list[ScheduleResult]:
+def generate_schedules(cfg: Config, profiles=None) -> list[ScheduleResult]:
     """Generate one schedule per objective profile.
 
     By default three options -- preference-, equity- and cluster-maximizing.
     Each satisfies all hard constraints and hits the requested shift counts; the
     profiles differ in which secondary goal they push. Returns a single
     infeasible / greedy result in a one-item list if no CP-SAT solution exists.
-
-    `deterministic=True` solves single-worker so identical inputs reproduce the
-    exact same schedule (auditable), at some cost to speed/quality.
     """
     cfg.apply_derived_ftes()  # keep target_fte in sync with the shift counts
     profiles = profiles or PROFILE_ORDER
@@ -1142,8 +1122,8 @@ def generate_schedules(cfg: Config, profiles=None,
     # Solve the profiles sequentially: each solve already uses a multi-worker
     # portfolio that saturates the cores, so the old thread-per-profile parallel
     # layout would just oversubscribe and slow everything down.
-    raw = [_solve_cpsat(cfg, operating, profile=p, seconds=seconds,
-                        deterministic=deterministic) for p in profiles]
+    raw = [_solve_cpsat(cfg, operating, profile=p, seconds=seconds)
+           for p in profiles]
 
     results = [r for r in raw if r.feasible]
     if not results:  # rare after the pre-checks -> best-effort greedy
