@@ -68,18 +68,21 @@ python tests/test_profiles.py     # the three options each do their job
    listed for reference. Load/save config as JSON.
 2. **Roster table** — one row per nurse. Columns are grouped: counts, then the
    **hard** guarantees, then the **soft** preferences.
-   - **D10**, **D5** (≥ 1), **Stat** shift counts over the rotation (no upper
-     cap — scale them up for longer rotations). These exact counts are guaranteed
-     in every option. Stat days are paid statutory holidays that replace a worked
-     D10. Everyone works at least one Saturday a month (D5 ≥ 1).
+   - **D10**, **D5** (≥ 1) shift counts over the rotation (no upper cap — scale
+     them up for longer rotations). These exact counts are guaranteed in every
+     option. Everyone works at least one Saturday a month (D5 ≥ 1). (A **Stat**
+     column for paid statutory-holiday days exists in the model but is hidden in
+     the UI by default — see `SHOW_STAT_HOLIDAYS` in `app.py` — for units whose
+     stats always fall on closure days.)
    - **Job share** label — two nurses with the same label split **one** full-time
      line: they never work the same day, combined workload ≤ 1.0 FTE.
    - **Hard guarantees** (tick boxes, enforced in all three options): **Mon off —
-     hard** (never works a Monday), **Work weekly — hard** (≥ 1 weekday shift
-     every Monday–Friday business week; Saturdays don't count), **Fri before Sat —
-     hard** (every worked Saturday is preceded by its Friday). The business week
-     wraps cyclically across the rotation seam, so a nurse never ends up with two
-     shifts at one end of the period and none at the other.
+     hard** / **Fri off — hard** (never works that weekday; *Fri off* disables
+     *Fri before Sat*), **Work weekly — hard** (≥ 1 weekday shift every
+     Monday–Friday business week; Saturdays don't count), **Fri before Sat — hard**
+     (every worked Saturday is preceded by its Friday). The business week wraps
+     cyclically across the rotation seam, so a nurse never ends up with two shifts
+     at one end of the period and none at the other.
    - **Soft preferences** (tick boxes, honoured most in the Preference option):
      **Mon/Wed/Fri off — soft**, **Spread Saturdays — soft** (avoid back-to-back),
      **Cluster shifts — soft** (group worked days for longer blocks off). *Mon off
@@ -106,13 +109,14 @@ python tests/test_profiles.py     # the three options each do their job
   it or blank for off. (Streamlit can't do drag-and-drop; click-to-edit is the
   direct equivalent.)
 - **Swap two shifts** — pick Shift A and Shift B; a confirmation previews the
-  compliance impact. A swap that would break a **union/contract** rule (25.06(E)
-  weekend cap, 25.06(C) max-consecutive, approved leave) is **blocked**; one that
-  only trips a **unit policy** (job share, a-Saturday-a-month) is **allowed with a
-  flag** — *Apply anyway* or reoptimize. Either way **Reoptimize to fit** keeps
-  your swap, holds every exact count and rule, and minimally shuffles other cells
-  to stay compliant (or tells you when even that's impossible). Counts are always
-  preserved.
+  compliance impact. A swap that would break a **contract** rule (25.06(E) weekend
+  cap, 25.06(C) max-consecutive, approved leave) **or a per-nurse hard guarantee**
+  (Mon/Fri off, work-weekly, Fri-before-Sat, exact counts) is **blocked**; one
+  that only trips a **collective unit policy** (job share, a-Saturday-a-month) is
+  **allowed with a flag** — *Apply anyway* or reoptimize. Either way **Reoptimize
+  to fit** keeps your swap, holds every exact count and rule, and minimally
+  shuffles other cells to stay compliant (or tells you when even that's
+  impossible). Counts are always preserved.
 - **Reset to generated** — discard manual edits.
 
 Everything **re-validates live** — the status banner and compliance report update

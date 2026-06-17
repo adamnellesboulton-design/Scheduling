@@ -175,6 +175,39 @@ def validate(cfg: Config, result) -> ValidationReport:
         )
     )
 
+    # --- Fixed days off respected (Mon-off / Fri-off guarantees) ----------
+    # Solver-enforced by variable omission, but re-checked so a manual grid edit
+    # or swap onto a guaranteed-off weekday is caught.
+    off_lines = [n for n in cfg.nurses if n.fixed_off_mon or n.fixed_off_fri]
+    if off_lines:
+        off_bad = []
+        for nurse in off_lines:
+            worked = _nurse_worked_dates(assignments, nurse.name)
+            for od in operating:
+                if od.iso not in worked:
+                    continue
+                if nurse.fixed_off_mon and od.weekday == 0:
+                    off_bad.append(f"{nurse.name} on Monday {od.iso}")
+                if nurse.fixed_off_fri and od.weekday == 4:
+                    off_bad.append(f"{nurse.name} on Friday {od.iso}")
+        report.rules.append(
+            RuleResult(
+                "Fixed days off respected (Mon/Fri off)",
+                "Unit policy (hard)",
+                "PASS" if not off_bad else "FAIL",
+                "Lines with a fixed day off: "
+                + ", ".join(
+                    f"{n.name} ("
+                    + "/".join(d for d, on in
+                               (("Mon", n.fixed_off_mon), ("Fri", n.fixed_off_fri))
+                               if on) + ")"
+                    for n in off_lines)
+                + ". "
+                + ("All respected." if not off_bad
+                   else "Violations -> " + "; ".join(off_bad)),
+            )
+        )
+
     # --- Job share: partners never work the same day (H8) -----------------
     js_groups: dict[str, list] = {}
     for nurse in cfg.nurses:
@@ -298,9 +331,36 @@ def validate(cfg: Config, result) -> ValidationReport:
                 "Work-every-week nurses work each Mon-Fri week",
                 "Unit policy (hard)",
                 "PASS" if ww_ok else "FAIL",
-                "Lines: " + ", ".join(n.name for n in ww_lines) + ". "
+                "Nurses: " + ", ".join(n.name for n in ww_lines) + ". "
                 + ("Each works >=1 weekday shift in every business week."
                    if ww_ok else "Gaps -> " + "; ".join(ww_bad)),
+            )
+        )
+
+    # --- Fri-before-Sat guarantee (every worked Saturday has its Friday) ---
+    # Solver-enforced; re-checked so a manual edit/swap that strands a Saturday
+    # without its Friday is caught (and hard-blocks a swap -- see _swap_hard_blocks).
+    fbs_lines = [n for n in cfg.nurses if n.fixed_fri_before_sat]
+    if fbs_lines and operating:
+        fri_iso_by_week = {od.week_index: od.iso for od in operating if od.weekday == 4}
+        fbs_ok = True
+        fbs_bad = []
+        for nurse in fbs_lines:
+            worked = _nurse_worked_dates(assignments, nurse.name)
+            for od in operating:
+                if od.is_saturday and od.iso in worked:
+                    fri = fri_iso_by_week.get(od.week_index)
+                    if not (fri and fri in worked):
+                        fbs_ok = False
+                        fbs_bad.append(f"{nurse.name}: Saturday {od.iso} without its Friday")
+        report.rules.append(
+            RuleResult(
+                "Fri-before-Sat nurses work the preceding Friday",
+                "Unit policy (hard)",
+                "PASS" if fbs_ok else "FAIL",
+                "Nurses: " + ", ".join(n.name for n in fbs_lines) + ". "
+                + ("Every worked Saturday is preceded by its Friday."
+                   if fbs_ok else "Gaps -> " + "; ".join(fbs_bad)),
             )
         )
 

@@ -338,6 +338,8 @@ def _build_config_sheet(wb: Workbook, cfg: Config, result):
         # Hard guarantees first, then soft preferences (matches the roster editor).
         if nurse.fixed_off_mon:
             prefs.append("Mon off (hard)")
+        if nurse.fixed_off_fri:
+            prefs.append("Fri off (hard)")
         if nurse.fixed_work_weekly:
             prefs.append("work weekly (hard)")
         if nurse.fixed_fri_before_sat:

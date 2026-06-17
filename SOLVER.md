@@ -76,7 +76,8 @@ Two structural guarantees are baked in by simply **omitting** variables, so they
 can never be violated:
 
 - A nurse marked unavailable on a date gets no variable there (**H3**).
-- A `fixed_off_mon` nurse gets no variable on any Monday (the hard "never Mondays").
+- A `fixed_off_mon` / `fixed_off_fri` nurse gets no variable on any Monday /
+  Friday (the hard "never Mondays" / "never Fridays").
 
 Statutory holidays get their own binaries `st[ni, oi]` — the solver **chooses**
 which holidays each nurse takes off (paid, not worked), up to entitlement, spread
@@ -117,12 +118,19 @@ Nurses sharing a `job_share_group` label are two people splitting **one** line, 
 **at most one** of them is assigned on any given day.
 
 ### 4.5 Opt-in per-nurse guarantees (hard when ticked)
-- **Mon off (fixed):** never a Monday (done by variable omission, §3).
+- **Mon off:** never a Monday (done by variable omission, §3).
+- **Fri off:** never a Friday (variable omission). Mutually exclusive with *Fri
+  before Sat* (you can't precede a Saturday with a Friday you never work) — the
+  UI drops the latter when this is set, and a loaded config with both is rejected
+  by the pre-check.
 - **Work weekly:** ≥ 1 **weekday** shift in every **Mon–Fri business week**.
   Business weeks are *not* the Friday-anchored rotation week — see
   [§7](#7-business-weeks-the-work-weekly-subtlety).
 - **Fri before Sat:** every worked Saturday is preceded by its Friday
   (`x[Fri] ≥ x[Sat]`); if the Friday isn't workable, the Saturday is forced off.
+
+All four are independently re-checked by the validator (§11), so a manual grid
+edit or swap that breaks one is caught — and they hard-block a swap (§9).
 
 *(H4 "≤ 6 consecutive days" and H6 "≤ 1 shift/day" can't be violated on a
 Mon/Wed/Fri/Sat unit, so they need no explicit constraint — the longest possible
@@ -216,14 +224,16 @@ schedule, so it is deliberately not offered.
 
 ## 9. Minimal swap-repair ("reoptimize to fit")
 
-The grid's **Swap two shifts** tool previews each swap's compliance impact, with
-a deliberate split between **contract** rules and **unit policy**:
+The grid's **Swap two shifts** tool previews each swap's compliance impact and
+splits failures into two tiers (`_swap_hard_blocks` classifies by citation):
 
-- A swap that would break a **union/contract** rule — the 25.06(E) weekend cap,
-  25.06(C) max-consecutive, or an approved-leave/unavailable date — is **blocked**.
-- A swap that only trips a **unit-policy** rule — job share (H8), a-Saturday-a-
-  month (H9), the count target — is **allowed with a flag**; the scheduler can
-  *Apply anyway* (their judgement) or reoptimize to keep it clean.
+- **Blocked** — a swap can't override these: the **contract** articles (25.06(E)
+  weekend cap, 25.06(C) max-consecutive), approved-leave/unavailable (H3), and the
+  per-nurse **hard guarantees** the scheduler explicitly ticked (Mon/Fri off,
+  work-weekly, Fri-before-Sat, exact counts). The only path is *Reoptimize to fit*.
+- **Soft (allowed with a flag)** — the unit's collective fairness policies: job
+  share (H8) and a-Saturday-a-month (H9). The scheduler can *Apply anyway* (their
+  judgement) or reoptimize to keep it clean.
 
 Either way the UI offers **Reoptimize to fit** → `reoptimize_to_fit()`, which
 re-solves the **same hard model** (`_build_core_model`, shared with the main
@@ -272,7 +282,7 @@ Manual grid edits and swaps are re-validated live through the same function.
 | H8 | Job-share partners never share a day | Hard | §4.4 |
 | H9 | ≥ 1 Saturday per rolling 4 weeks | Hard | §4.3 |
 | — | Exact D10 / D5 counts | Hard | §4.2 |
-| — | Mon off / Work weekly / Fri before Sat | Hard when ticked | §4.5 |
+| — | Mon off / Fri off / Work weekly / Fri before Sat | Hard when ticked | §4.5 |
 
 ---
 
@@ -307,7 +317,7 @@ policy** or a **modeling interpretation**, so the compliance story is honest.
 | ≥ 1 Saturday per rolling 4 weeks ("a Saturday a month") | — | — | Hard constraint (H9) | **Unit policy, not contract** |
 | Job share: never the same day, combined ≤ 1.0 FTE | — | — | Hard constraints (H8 + precheck) | **Unit policy** |
 | Exact D10 / D5 counts per nurse | — | — | Hard | **Unit target** |
-| Mon off / Work weekly / Fri before Sat | — | — | Hard when ticked | **Per-nurse opt-in, not contract** |
+| Mon off / Fri off / Work weekly / Fri before Sat | — | — | Hard when ticked | **Per-nurse opt-in, not contract** |
 
 Note on 25.06(E): the contract sets a weekend **floor** (everyone gets weekends
 *off*); the tool's H2 cap enforces it, while H9 ("a Saturday a month") is a

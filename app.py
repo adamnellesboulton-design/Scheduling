@@ -22,7 +22,6 @@ from dialysis_scheduler.config import (
 from dialysis_scheduler.model import build_operating_dates, is_worked
 from dialysis_scheduler.holidays import holidays_in_range
 from dialysis_scheduler.scheduler import (
-    generate_schedule,
     generate_schedules,
     reoptimize_to_fit,
 )
@@ -33,6 +32,13 @@ st.set_page_config(
     page_title="Dialysis Unit Scheduler",
     layout="wide",
 )
+
+
+# Statutory-holiday (ST) inputs are hidden for units whose stat days always fall
+# on closure days (Tue/Thu) and so never need scheduling. The ST machinery stays
+# intact (stat_days defaults to 0); flip this to True to surface it again — e.g.
+# for a unit that operates on days a stat can land on.
+SHOW_STAT_HOLIDAYS = False
 
 
 # --- look & feel -----------------------------------------------------------
@@ -208,15 +214,17 @@ def sidebar():
     # FTE flex is a fixed secondary check now (counts are the target); 0.08.
     cfg.fte_tolerance = 0.08
 
-    # Statutory holidays in the rotation (BCNU stat-holidays article), for reference.
-    stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
-    st.sidebar.subheader("Statutory holidays")
-    st.sidebar.caption(
-        f"**{len(stats)}** fall in this rotation: "
-        + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
-           or "none")
-        + ". Set each nurse's stat-day entitlement in the roster."
-    )
+    # Statutory holidays in the rotation, for reference (hidden when the unit
+    # doesn't use stat days -- see SHOW_STAT_HOLIDAYS).
+    if SHOW_STAT_HOLIDAYS:
+        stats = holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks))
+        st.sidebar.subheader("Statutory holidays")
+        st.sidebar.caption(
+            f"**{len(stats)}** fall in this rotation: "
+            + (", ".join(f"{d.strftime('%d-%b')} {name}" for d, name in stats)
+               or "none")
+            + ". Set each nurse's stat-day entitlement in the roster."
+        )
 
 
 # --- roster editor ---------------------------------------------------------
@@ -226,13 +234,14 @@ def roster_editor():
     cfg = _cfg()
     st.header("Nurse roster")
 
+    _stat_note = (
+        "Stat days are paid statutory holidays, shown as **ST** on the actual "
+        "holiday date; each replaces one worked D10. " if SHOW_STAT_HOLIDAYS else "")
     st.caption(
         "Give each nurse their **D10** (10-hour weekday) and **D5** (5-hour "
-        "Saturday, at least 1) shift counts plus any paid **stat** days, for the "
-        "whole rotation — these exact counts are guaranteed in every option (no "
-        "upper cap; scale them up for longer rotations). Stat days are paid "
-        "statutory holidays, shown as **ST** on the actual holiday "
-        "date; each replaces one worked D10. **FTE** is derived from the counts "
+        "Saturday, at least 1) shift counts for the whole rotation — these exact "
+        "counts are guaranteed in every option (no upper cap; scale them up for "
+        "longer rotations). " + _stat_note + "**FTE** is derived from the counts "
         "(read-only). The **hard** columns are guarantees that always hold; the "
         "**soft** columns are preferences, honoured most in the Preference option. "
         "Give two nurses the same **Job share** label to split one line (they "
@@ -243,13 +252,14 @@ def roster_editor():
 
     rows = []
     for n in cfg.nurses:
-        rows.append({
+        row = {
             "name": n.name,
             "d10": int(n.target_d10),
             "d5": int(n.target_d5),
             "stat": int(n.stat_days),
             "job_share": n.job_share_group,
             "fixed_off_mon": n.fixed_off_mon,
+            "fixed_off_fri": n.fixed_off_fri,
             "fixed_work_weekly": n.fixed_work_weekly,
             "fixed_fri_before_sat": n.fixed_fri_before_sat,
             "pref_off_mon": n.pref_off_mon,
@@ -258,7 +268,10 @@ def roster_editor():
             "pref_nonconsec_sat": n.pref_nonconsec_sat,
             "pref_clustered": n.pref_clustered,
             "unavailable_dates": ", ".join(n.unavailable_dates),
-        })
+        }
+        if not SHOW_STAT_HOLIDAYS:
+            row.pop("stat")
+        rows.append(row)
     df = pd.DataFrame(rows)
 
     edited = st.data_editor(
@@ -296,6 +309,13 @@ def roster_editor():
                 help="Hard guarantee (every option): this nurse is never scheduled "
                      "on a Monday. If too many nurses opt out, a Monday may be left "
                      "short — shown as a blank shift.",
+            ),
+            "fixed_off_fri": st.column_config.CheckboxColumn(
+                "Fri off — hard",
+                help="Hard guarantee (every option): this nurse is never scheduled "
+                     "on a Friday. Overrides (disables) 'Fri before Sat' for this "
+                     "nurse, since you can't precede a Saturday with a Friday you "
+                     "never work.",
             ),
             "fixed_work_weekly": st.column_config.CheckboxColumn(
                 "Work weekly — hard",
@@ -358,6 +378,7 @@ def roster_editor():
                 return int(round(float(v)))
             except (TypeError, ValueError):
                 return default
+        off_fri = bool(r.get("fixed_off_fri", False))
         new_nurses.append(Nurse(
             name=name,
             target_d10=_int(r.get("d10")),
@@ -368,8 +389,10 @@ def roster_editor():
             pref_nonconsec_sat=bool(r["pref_nonconsec_sat"]),
             pref_clustered=bool(r["pref_clustered"]),
             fixed_off_mon=bool(r.get("fixed_off_mon", False)),
+            fixed_off_fri=off_fri,
             fixed_work_weekly=bool(r.get("fixed_work_weekly", False)),
-            fixed_fri_before_sat=bool(r.get("fixed_fri_before_sat", False)),
+            # 'Fri off' overrides 'Fri before Sat' (they conflict).
+            fixed_fri_before_sat=bool(r.get("fixed_fri_before_sat", False)) and not off_fri,
             pref_off_mon=bool(r.get("pref_off_mon", False)),
             pref_off_wed=bool(r["pref_off_wed"]),
             pref_off_fri=bool(r["pref_off_fri"]),
@@ -569,13 +592,15 @@ def generate_section():
     op = build_operating_dates(cfg)
     wd_shifts = sum(o.demand for o in op if not o.is_saturday)
     sat_shifts = sum(o.demand for o in op if o.is_saturday)
-    n_stats = len(holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks)))
-    m = st.columns(5)
+    ncols = 5 if SHOW_STAT_HOLIDAYS else 4
+    m = st.columns(ncols)
     m[0].metric("Options", len(options))
     m[1].metric("Weeks", cfg.weeks)
     m[2].metric("Weekday shifts", wd_shifts)
     m[3].metric("Saturday shifts", sat_shifts)
-    m[4].metric("Stat holidays", n_stats)
+    if SHOW_STAT_HOLIDAYS:
+        n_stats = len(holidays_in_range(cfg.start, cfg.start + timedelta(weeks=cfg.weeks)))
+        m[4].metric("Stat holidays", n_stats)
     st.caption("Compare the options in the tabs below, then download your pick.")
 
     labels = [o.label or f"Option {chr(65 + i)}" for i, o in enumerate(options)]
@@ -606,8 +631,8 @@ GUARANTEES = (
     "- Job-share partners never work the same day; their combined workload stays "
     "within one full-time line.\n"
     "- No nurse is scheduled on a date marked unavailable.\n"
-    "- Every per-nurse **hard** guarantee ticked in the roster (Mon off, Work "
-    "weekly, Fri before Sat) holds.\n\n"
+    "- Every per-nurse **hard** guarantee ticked in the roster (Mon off, Fri "
+    "off, Work weekly, Fri before Sat) holds.\n\n"
     "The three options differ **only** in how those fixed shifts are arranged "
     "across the calendar — never in how many each nurse works."
 )
@@ -616,14 +641,17 @@ GUARANTEES = (
 def _swap_hard_blocks(rule) -> bool:
     """Whether a failing rule must HARD-block a manual swap.
 
-    Only genuine **union/contract** rules block: the collective-agreement
-    articles (25.x / 26.x — e.g. the 25.06(E) weekend cap, 25.06(C) max
-    consecutive days) and approved-leave (H3). Everything else is **unit policy**
-    (job share, a-Saturday-a-month, work-weekly, count targets) and is treated as
-    soft for a swap — a warning the scheduler can override.
+    Hard-blocked (a swap can't override these): the collective-agreement articles
+    (25.x / 26.x — e.g. the 25.06(E) weekend cap, 25.06(C) max consecutive days),
+    approved-leave (H3), and the per-nurse **hard guarantees** the scheduler
+    explicitly ticked — Mon/Fri off, work-weekly, Fri-before-Sat, exact counts
+    (all cited "Unit policy (hard)").
+
+    Left **soft** (allowed with a flag / fixable by reoptimize): the unit's
+    collective fairness policies — job share (H8) and a-Saturday-a-month (H9).
     """
     c = rule.citation
-    return "25." in c or "26." in c or "(H3)" in c
+    return "25." in c or "26." in c or "(H3)" in c or c == "Unit policy (hard)"
 
 
 def _render_option(cfg: Config, opt, idx: int):
@@ -657,7 +685,8 @@ def _render_option(cfg: Config, opt, idx: int):
         "Nurse", disabled=True, pinned=True, width="small")}
     for od in operating:
         # ST (statutory holiday off) is only offered on weekdays.
-        opts = ["", od.shift.code, "LV"] + ([] if od.is_saturday else ["ST"])
+        opts = ["", od.shift.code, "LV"] + (
+            ["ST"] if (SHOW_STAT_HOLIDAYS and not od.is_saturday) else [])
         col_cfg[_label(od)] = st.column_config.SelectboxColumn(
             _label(od), options=opts, width="small",
         )
@@ -923,17 +952,6 @@ def _do_swap(assignments: dict, A, B, operating) -> str:
     return ""
 
 
-def _style_grid(df: pd.DataFrame):
-    """Subtle on-screen shading for worked / leave cells (clean, low-contrast)."""
-    def shade(v):
-        if v in ("D10", "D5"):
-            return "background-color:#e8f1f1"   # faint teal tint
-        if v == "LV":
-            return "background-color:#f2f2f2;color:#9aa0a6"
-        return ""
-    return df.style.map(shade, subset=[c for c in df.columns if c != "Nurse"])
-
-
 def _cached_workbook_bytes(idx, cfg, result, report, assignments):
     sig = tuple(sorted(
         (name, tuple(sorted(days.items()))) for name, days in assignments.items()
@@ -980,8 +998,9 @@ def main():
             "- The unit runs **Fri / Sat / Mon / Wed** each week (the rotation "
             "starts on a Friday). Weekdays are **D10** (10-hour) shifts; Saturdays "
             "are **D5** (5-hour) shifts.\n"
-            "- In the **roster**, give each nurse their **D10**, **D5** and "
-            "**stat** counts. The generator hits those exact counts while keeping "
+            "- In the **roster**, give each nurse their **D10** and **D5**"
+            + (" and **stat**" if SHOW_STAT_HOLIDAYS else "")
+            + " counts. The generator hits those exact counts while keeping "
             "every contract rule.\n"
             "- Press **Generate three options** for **Preference**, **Equity** and "
             "**Cluster** schedules — same counts and rules, different arrangement. "

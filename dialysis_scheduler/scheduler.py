@@ -221,6 +221,11 @@ def coverage_feasibility_check(
         for n in cfg.nurses:
             if not nurse_eligible_for(n, od):
                 continue
+            # A fixed weekday-off line can't fill that weekday (mirrors the
+            # variable omission in the model), so it doesn't add capacity.
+            if (n.fixed_off_mon and od.weekday == 0) or \
+               (n.fixed_off_fri and od.weekday == 4):
+                continue
             label = (n.job_share_group or "").strip()
             if label:
                 group_has_elig[label] = True
@@ -337,20 +342,36 @@ def shift_count_feasibility_check(
                 f"is {sat_max}. Lower it."
             )
 
-        # A fixed Monday-off line must still hit its worked D10 target on the
-        # remaining weekdays (Tue/Wed/Thu/Fri minus any approved leave).
+        # Fixed weekday-off guarantees (Mon and/or Fri) shrink the weekdays a line
+        # can work; its worked-D10 target must still fit the rest.
+        off_wd = set()
         if n.fixed_off_mon:
+            off_wd.add(0)
+        if n.fixed_off_fri:
+            off_wd.add(4)
+        if off_wd:
             wd_slots = sum(
                 1 for od in operating
-                if not od.is_saturday and od.weekday != 0
+                if not od.is_saturday and od.weekday not in off_wd
                 and od.iso not in n.unavailable_dates
             )
             if n.worked_d10() > wd_slots:
+                days = " and ".join(
+                    {0: "Mondays", 4: "Fridays"}[w] for w in sorted(off_wd))
                 msgs.append(
                     f"{n.name}: D10 count {n.worked_d10()} can't fit in the "
-                    f"{wd_slots} non-Monday weekdays available (Mondays off is a "
-                    "fixed guarantee). Lower the D10 count or untick Mondays off."
+                    f"{wd_slots} available weekdays ({days} off is a fixed "
+                    "guarantee). Lower the D10 count or untick a fixed day off."
                 )
+
+        # 'Fri off' and 'Fri before Sat' are mutually exclusive: never working a
+        # Friday makes "a Friday for every Saturday" impossible the moment a
+        # Saturday is worked (and >=1 Saturday/month is required).
+        if n.fixed_off_fri and n.fixed_fri_before_sat:
+            msgs.append(
+                f"{n.name}: 'Fri off' and 'Fri before Sat' conflict — a line that "
+                "never works Fridays can't precede a Saturday with one. Untick one."
+            )
 
         # A "work every week" line needs at least one WEEKDAY shift for each
         # BUSINESS week (Mon-Fri) it has an eligible weekday -- so its worked D10
@@ -361,6 +382,7 @@ def shift_count_feasibility_check(
                 for od in operating
                 if not od.is_saturday and nurse_eligible_for(n, od)
                 and not (n.fixed_off_mon and od.weekday == 0)
+                and not (n.fixed_off_fri and od.weekday == 4)
             })
             if n.worked_d10() < weeks_avail:
                 msgs.append(
@@ -372,7 +394,7 @@ def shift_count_feasibility_check(
 
         # Friday-before-Saturday needs at least one worked Friday per worked
         # Saturday, so the worked D10 count must be >= the D5 count.
-        if n.fixed_fri_before_sat and n.worked_d10() < n.target_d5:
+        if n.fixed_fri_before_sat and not n.fixed_off_fri and n.worked_d10() < n.target_d5:
             msgs.append(
                 f"{n.name}: {n.worked_d10()} weekday shifts can't supply a Friday "
                 f"for each of {n.target_d5} Saturdays (Friday-before-Saturday is a "
@@ -464,9 +486,11 @@ def _build_core_model(cfg: Config, operating: list[OperatingDate]) -> _CoreModel
         for oi, od in enumerate(operating):
             if not nurse_eligible_for(nurse, od):
                 continue
-            # Fixed Monday-off is a HARD guarantee: omit the variable entirely so
-            # the line can never be scheduled a Monday (same mechanism as H3).
+            # Fixed weekday-off is a HARD guarantee: omit the variable entirely so
+            # the line can never be scheduled that weekday (same mechanism as H3).
             if nurse.fixed_off_mon and od.weekday == 0:
+                continue
+            if nurse.fixed_off_fri and od.weekday == 4:
                 continue
             x[(ni, oi)] = model.NewBoolVar(f"x_{ni}_{oi}")
 
@@ -992,6 +1016,8 @@ def _greedy(cfg: Config, operating: list[OperatingDate]) -> ScheduleResult:
     def fixed_ok(nurse: Nurse, od: OperatingDate) -> bool:
         # Honour the per-line HARD guarantees even in the fallback.
         if nurse.fixed_off_mon and od.weekday == 0:
+            return False
+        if nurse.fixed_off_fri and od.weekday == 4:
             return False
         if nurse.fixed_fri_before_sat and od.is_saturday:
             fri = fri_iso_by_week.get(od.week_index)  # need the Friday worked first

@@ -221,6 +221,39 @@ def test_fixed_off_mon_guaranteed():
     print(f"  fixed Mon off: Kathleen works 0 of {len(mondays)} Mondays, all options")
 
 
+def test_fixed_off_fri_guaranteed():
+    """A nurse ticked 'Fri off (hard)' never works a Friday in any option.
+
+    Uses Leslie (18 D10), which fits in the Mon+Wed slots (24).
+    """
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Leslie":
+            n.fixed_off_fri = True
+    opts = generate_schedules(cfg)
+    op = build_operating_dates(cfg)
+    fridays = [d.iso for d in op if d.weekday == 4]
+    for o in opts:
+        assert opts[0].feasible
+        assert not check_contract(cfg, o), o.label
+        worked = [d for d in fridays if is_worked(o.assignments["Leslie"].get(d))]
+        assert not worked, f"{o.label}: Leslie worked Fridays {worked}"
+    print(f"  fixed Fri off: Leslie works 0 of {len(fridays)} Fridays, all options")
+
+
+def test_fri_off_conflicts_with_fri_before_sat():
+    """'Fri off' and 'Fri before Sat' are mutually exclusive -> clear rejection."""
+    cfg = default_config(_friday())
+    for n in cfg.nurses:
+        if n.name == "Leslie":
+            n.fixed_off_fri = True
+            n.fixed_fri_before_sat = True
+    opts = generate_schedules(cfg)
+    assert not opts[0].feasible
+    assert any("conflict" in m.lower() for m in opts[0].messages)
+    print("  fri-off vs fri-before-sat: conflict correctly rejected")
+
+
 def test_fixed_work_weekly_guaranteed():
     """A line ticked 'Work weekly' works >=1 WEEKDAY shift every BUSINESS week
     (Mon-Fri; Saturdays don't count) in any option."""

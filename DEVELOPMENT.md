@@ -41,10 +41,12 @@ tests/
   `.paid_hours(meal_flag)`.
 - `Nurse(name, target_fte, target_d10, target_d5, stat_days, unavailable_dates,
   fte_tolerance, job_share_group, pref_nonconsec_sat, pref_clustered,
-  pref_off_mon, pref_off_wed, pref_off_fri, fixed_off_mon, fixed_work_weekly,
-  fixed_fri_before_sat)` — the `fixed_*` flags are HARD per-line guarantees (never
-  works a Monday / works a weekday every **business** week / Friday before each
-  worked Saturday), enforced in all three options. `pref_off_mon` is the SOFT
+  pref_off_mon, pref_off_wed, pref_off_fri, fixed_off_mon, fixed_off_fri,
+  fixed_work_weekly, fixed_fri_before_sat)` — the `fixed_*` flags are HARD per-line
+  guarantees (never works a Monday / never a Friday / works a weekday every
+  **business** week / Friday before each worked Saturday), enforced in all three
+  options. `fixed_off_fri` excludes `fixed_fri_before_sat` (mutually exclusive).
+  `pref_off_mon` is the SOFT
   Monday-off preference (cf. the hard `fixed_off_mon`). `.worked_d10()` =
   `max(0, target_d10 - stat_days)`; `.target_hours(d10_paid, sat_paid)`.
   **No `seniority_rank`, no `fixed_saturdays_off`** (both removed).
@@ -144,10 +146,13 @@ Variables: `x[(ni, oi)] ∈ {0,1}` for each eligible nurse × operating date.
 (H3 = var omission for unavailable dates; H4/H6 structural.)
 
 **Per-line fixed options (HARD, opt-in checkboxes):**
-- `fixed_off_mon` — Monday `x` vars are **omitted** for that line (same mechanism
-  as H3), so it can never be scheduled a Monday. A specific day also falls back
-  to soft coverage when `len(vars_for_day) < demand` (heavy opt-out → blank
-  Mondays, never infeasible).
+- `fixed_off_mon` / `fixed_off_fri` — Monday / Friday `x` vars are **omitted** for
+  that line (same mechanism as H3), so it can never be scheduled that weekday. A
+  specific day also falls back to soft coverage when `len(vars_for_day) < demand`
+  (heavy opt-out → blank shifts, never infeasible). `fixed_off_fri` is mutually
+  exclusive with `fixed_fri_before_sat` (UI drops the latter; pre-check rejects a
+  loaded config with both). The coverage pre-check and `_build_core_model` both
+  skip these lines on the off weekday.
 - `fixed_work_weekly` — `Σ weekday x over each BUSINESS week ≥ 1` for that line
   (Saturdays don't count; weeks with no eligible weekday are skipped). Business
   weeks are Mon–Fri (`business_week_index` in `model.py`): the rotation is
