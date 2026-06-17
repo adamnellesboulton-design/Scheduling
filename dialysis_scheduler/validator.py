@@ -272,7 +272,7 @@ def validate(cfg: Config, result) -> ValidationReport:
             "Everyone works >=1 Saturday per month",
             "Unit policy (H9)",
             "PASS" if h9_ok else "FAIL",
-            "All non-waived lines have a Saturday in every 4-week window."
+            "All non-waived nurses have a Saturday in every 4-week window."
             if h9_ok else "Gaps -> " + "; ".join(h9_bad),
         )
     )
@@ -295,7 +295,7 @@ def validate(cfg: Config, result) -> ValidationReport:
                     ww_bad.append(f"{nurse.name}: no weekday in business week {bw + 1}")
         report.rules.append(
             RuleResult(
-                "Work-every-week lines work each Mon-Fri week",
+                "Work-every-week nurses work each Mon-Fri week",
                 "Unit policy (hard)",
                 "PASS" if ww_ok else "FAIL",
                 "Lines: " + ", ".join(n.name for n in ww_lines) + ". "
@@ -322,10 +322,10 @@ def validate(cfg: Config, result) -> ValidationReport:
             )
     report.rules.append(
         RuleResult(
-            "Shift-count targets met (D10 + D5 per line)",
+            "Shift-count targets met (D10 + D5 per nurse)",
             "Unit policy (hard)",
             "PASS" if sc_ok else "FAIL",
-            "Every line hits its requested worked shift counts (stat days excluded)."
+            "Every nurse hits their requested worked shift counts (stat days excluded)."
             if sc_ok else "Off target -> " + "; ".join(sc_lines),
         )
     )
@@ -382,9 +382,9 @@ def validate(cfg: Config, result) -> ValidationReport:
     report.rules.append(
         RuleResult(
             "Derived FTE within flex (secondary)",
-            f"26.01 + config (default +/-{cfg.fte_tolerance}, per-line)",
+            f"26.01 + config (default +/-{cfg.fte_tolerance}, per-nurse)",
             "PASS" if fte_all_ok else "WARN",
-            "All lines within their FTE flex (derived from shift counts)."
+            "All nurses within their FTE flex (derived from shift counts)."
             if fte_all_ok
             else "Outside flex (shift counts take priority) -> " + "; ".join(fte_lines),
         )
@@ -415,10 +415,10 @@ def validate(cfg: Config, result) -> ValidationReport:
                 worst_lines.append(f"{nurse.name}: worst window {worst}/4 active")
         report.rules.append(
             RuleResult(
-                "Low-FTE lines active >=3 of every 4 weeks",
+                "Low-FTE nurses active >=3 of every 4 weeks",
                 "Unit policy (soft)",
                 "PASS" if all_ok else "WARN",
-                f"Applies to lines below {LOW_FTE_THRESHOLD:.2f} FTE: "
+                f"Applies to nurses below {LOW_FTE_THRESHOLD:.2f} FTE: "
                 + (", ".join(n.name for n in low_lines))
                 + ". "
                 + ("All meet the 3-of-4 target."
@@ -441,7 +441,7 @@ def validate(cfg: Config, result) -> ValidationReport:
             + (", ".join(f"{d.strftime('%a %d-%b')} {name}" for d, name in stats)
                or "none")
             + ". Stat days are paid (a weekday-shift equivalent) and reduce worked "
-            "D10 shifts. Per-line stat credit: " + (stat_credit or "none set") + ".",
+            "D10 shifts. Per-nurse stat credit: " + (stat_credit or "none set") + ".",
         )
     )
 

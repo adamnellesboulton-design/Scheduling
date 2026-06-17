@@ -54,7 +54,7 @@ def test_generate_and_validate():
     for h in hard:
         assert statuses[h] == "PASS", f"{h} -> {statuses[h]}"
     # Default roster is sized to hit its shift counts exactly.
-    assert statuses["Shift-count targets met (D10 + D5 per line)"] == "PASS"
+    assert statuses["Shift-count targets met (D10 + D5 per nurse)"] == "PASS"
     assert report.max_consecutive_days <= 6
 
     for s in report.nurse_summaries:

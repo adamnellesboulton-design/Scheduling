@@ -37,18 +37,26 @@ st.set_page_config(
 
 # --- look & feel -----------------------------------------------------------
 
-# A calm, clinical visual layer: a teal hero band, card-like metrics, pill tabs
-# and gentle section accents. Tuned to read as a professional hospital tool —
+# A calm, clinical visual layer: a teal hero band, card-like metrics, tabs and
+# gentle section accents. Tuned to read as a professional hospital tool —
 # restrained, high-contrast and easy on the eyes for non-technical clinical
-# users — not flashy. Colours track the theme in .streamlit/config.toml.
+# users — not flashy. Every corner is square (sharp edges). Colours track the
+# theme in .streamlit/config.toml.
 _STYLE = """
 <style>
   .block-container { padding-top: 2.2rem; max-width: 1380px; }
 
+  /* Sharp edges everywhere: belt-and-suspenders with baseRadius = none. */
+  .stButton button, [data-testid="stMetric"], [data-baseweb="tab"],
+  [data-testid="stExpander"] details, [data-testid="stNotification"],
+  .stAlert, [data-baseweb="input"], [data-baseweb="select"], [data-baseweb="base-input"],
+  .stDataFrame, [data-testid="stDataFrame"], .stDownloadButton button,
+  input, textarea, .ds-hero, .ds-hero .ds-tag { border-radius: 0 !important; }
+
   /* Hero band */
   .ds-hero {
     background: linear-gradient(135deg, #0F6E6E 0%, #0B5563 100%);
-    color: #fff; border-radius: 0.9rem;
+    color: #fff;
     padding: 1.35rem 1.6rem; margin-bottom: 1.5rem;
     box-shadow: 0 6px 20px rgba(15, 110, 110, 0.20);
   }
@@ -61,7 +69,7 @@ _STYLE = """
   .ds-hero .ds-tag {
     display: inline-block; background: rgba(255,255,255,0.14);
     border: 1px solid rgba(255,255,255,0.28); color: #EAF5F5;
-    padding: .18rem .65rem; border-radius: 999px; font-size: 0.74rem; font-weight: 500;
+    padding: .18rem .65rem; font-size: 0.74rem; font-weight: 500;
   }
 
   /* Section headings: subtle teal left accent */
@@ -72,16 +80,16 @@ _STYLE = """
 
   /* Metric cards */
   [data-testid="stMetric"] {
-    background: #fff; border: 1px solid #DCE4E5; border-radius: 0.7rem;
+    background: #fff; border: 1px solid #DCE4E5;
     padding: .7rem .95rem; box-shadow: 0 1px 2px rgba(31, 41, 51, 0.04);
   }
   [data-testid="stMetricValue"] { color: #0F6E6E; font-weight: 700; }
   [data-testid="stMetricLabel"] { color: #52616B; }
 
-  /* Tabs as pills */
+  /* Tabs */
   .stTabs [data-baseweb="tab-list"] { gap: .4rem; border-bottom: none; }
   .stTabs [data-baseweb="tab"] {
-    background: #F1F5F6; border-radius: 0.6rem; padding: .35rem 1rem;
+    background: #F1F5F6; padding: .35rem 1rem;
     border: 1px solid #DCE4E5;
   }
   .stTabs [data-baseweb="tab"] p { font-weight: 600; color: #52616B; }
@@ -94,7 +102,7 @@ _STYLE = """
 
   /* Expanders read as light cards */
   [data-testid="stExpander"] details {
-    border: 1px solid #DCE4E5; border-radius: 0.6rem; background: #FBFCFC;
+    border: 1px solid #DCE4E5; background: #FBFCFC;
   }
 </style>
 """

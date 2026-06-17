@@ -167,7 +167,7 @@ def config_integrity_check(cfg: Config) -> PreCheck:
     if dupes:
         msgs.append(
             "Duplicate nurse name(s): " + ", ".join(dupes)
-            + ". Names must be unique (each line is keyed by name)."
+            + ". Names must be unique (each nurse is keyed by name)."
         )
     if cfg.weeks < 1:
         msgs.append("Rotation length must be at least 1 week.")
@@ -230,7 +230,7 @@ def coverage_feasibility_check(
         if od.demand > effective:
             ok = False
             note = (
-                " (job-share lines count once per day, reducing same-day capacity)"
+                " (job-share nurses count once per day, reducing same-day capacity)"
                 if group_has_elig else ""
             )
             msgs.append(
@@ -936,10 +936,10 @@ def _diagnose(cfg: Config, operating: list[OperatingDate]) -> list[str]:
         n_solo = sum(1 for n in cfg.nurses if not (n.job_share_group or "").strip())
         if max_weekday_demand >= n_solo + len(js_labels):
             findings.append(
-                "H8 (job share) is likely binding: with job-share lines counting "
-                "once per day, meeting weekday demand forces every non-shared line "
+                "H8 (job share) is likely binding: with job-share nurses counting "
+                "once per day, meeting weekday demand forces every non-shared nurse "
                 "to work most days, which can exceed their FTE flex. Lower weekday "
-                "demand, add a line, or reduce/remove a job share."
+                "demand, add a nurse, or reduce/remove a job share."
             )
 
     if not findings:
