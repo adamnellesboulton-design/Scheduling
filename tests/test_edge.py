@@ -186,13 +186,25 @@ def test_reoptimize_keeps_schedule_compliant():
     cfg = default_config(_friday())
     r = generate_schedule(cfg)
     op = r.operating
-    # A Wednesday Kaitlyn does not currently work -> pin her onto it.
-    wed = next(od for od in op if od.weekday == 2
-               and not is_worked(r.assignments["Kaitlyn"].get(od.iso)))
+    # Find any nurse + weekday they don't currently work but could (eligible, not
+    # Mon-off) -- robust to the non-deterministic layout.
+    pin_name = pin_iso = None
+    for od in op:
+        if od.is_saturday:
+            continue
+        for n in cfg.nurses:
+            if (not is_worked(r.assignments[n.name].get(od.iso))
+                    and od.iso not in n.unavailable_dates
+                    and not (n.fixed_off_mon and od.weekday == 0)):
+                pin_name, pin_iso = n.name, od.iso
+                break
+        if pin_name:
+            break
+    assert pin_name, "no free weekday cell found"
     rep = reoptimize_to_fit(cfg, op, r.assignments,
-                            [("Kaitlyn", wed.iso, True)], seconds=4.0)
+                            [(pin_name, pin_iso, True)], seconds=4.0)
     assert rep.ok, rep.message
-    assert is_worked(rep.assignments["Kaitlyn"].get(wed.iso))  # pin honoured
+    assert is_worked(rep.assignments[pin_name].get(pin_iso))  # pin honoured
     report = validate(cfg, replace(r, assignments=rep.assignments))
     fails = [x.rule for x in report.rules if x.status == "FAIL"]
     assert not fails, fails

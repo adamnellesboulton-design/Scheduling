@@ -717,12 +717,14 @@ def _render_option(cfg: Config, opt, idx: int):
                 if trep.unfilled_shifts else [])
 
             def _do_reoptimize():
+                nonlocal assignments
                 pins = [(A[1], A[2], False), (A[1], B[2], True),
                         (B[1], B[2], False), (B[1], A[2], True)]
                 with st.spinner("Finding the closest compliant schedule…"):
                     rep = reoptimize_to_fit(cfg, operating, assignments, pins)
                 if rep.ok:
                     work[idx] = rep.assignments
+                    assignments = work[idx]  # so this render re-validates fresh data
                     st.session_state.pop(pend_key, None)
                     gridver[idx] += 1
                     st.success("Done — kept the swap and stayed compliant by "
@@ -739,15 +741,17 @@ def _render_option(cfg: Config, opt, idx: int):
 
             # Only genuine UNION (contract) rules hard-block the swap; unit-policy
             # issues are soft -- allowed with a flag, or fixable via reoptimize.
+            # Button keys are suffixed per branch so they stay unique even though
+            # only one branch renders per run.
             if hard_fail:
                 st.error("This swap would **break a union rule** ("
                          + "; ".join(hard_fail) + "), so it can't be applied "
                          "as-is. Reoptimize to keep the swap and stay compliant.")
                 cc1, cc2 = st.columns(2)
-                if cc1.button("Reoptimize to fit", key=f"reopt_{idx}",
+                if cc1.button("Reoptimize to fit", key=f"reopt_hard_{idx}",
                               type="primary", width="stretch"):
                     _do_reoptimize()
-                if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
+                if cc2.button("Cancel", key=f"cancel_hard_{idx}", width="stretch"):
                     st.session_state.pop(pend_key, None)
             elif review:
                 st.warning("This swap is allowed but would leave a **unit-policy** "
@@ -755,21 +759,21 @@ def _render_option(cfg: Config, opt, idx: int):
                            + ". Apply it anyway, or reoptimize to keep everything "
                            "clean.")
                 cc1, cc2, cc3 = st.columns(3)
-                if cc1.button("Apply anyway", key=f"confirm_{idx}",
+                if cc1.button("Apply anyway", key=f"confirm_review_{idx}",
                               type="primary", width="stretch"):
                     _do_plain()
-                if cc2.button("Reoptimize to fit", key=f"reopt_{idx}",
+                if cc2.button("Reoptimize to fit", key=f"reopt_review_{idx}",
                               width="stretch"):
                     _do_reoptimize()
-                if cc3.button("Cancel", key=f"cancel_{idx}", width="stretch"):
+                if cc3.button("Cancel", key=f"cancel_review_{idx}", width="stretch"):
                     st.session_state.pop(pend_key, None)
             else:
                 st.success("After this swap the schedule stays fully compliant.")
                 cc1, cc2 = st.columns(2)
-                if cc1.button("Confirm swap", key=f"confirm_{idx}",
+                if cc1.button("Confirm swap", key=f"confirm_clean_{idx}",
                               type="primary", width="stretch"):
                     _do_plain()
-                if cc2.button("Cancel", key=f"cancel_{idx}", width="stretch"):
+                if cc2.button("Cancel", key=f"cancel_clean_{idx}", width="stretch"):
                     st.session_state.pop(pend_key, None)
 
         # Reset to generated -- with a confirmation (it discards manual edits).
