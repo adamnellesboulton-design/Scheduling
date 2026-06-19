@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pediatric Dialysis Unit Scheduler</title>
+<meta name="description" content="A constraint-solver scheduling tool for the BC Children's Hospital pediatric hemodialysis unit — compliant, equitable master rotations under the BCNU collective agreement." />
+<style>
+  :root{
+    --teal:#0F6E6E; --teal-dark:#0B5563; --slate:#1F2933; --muted:#52616B;
+    --line:#DCE4E5; --bg:#FFFFFF; --soft:#F1F5F6; --tint:#E8F1F1;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    color:var(--slate); background:var(--bg); line-height:1.55; font-size:16px;
+  }
+  a{color:var(--teal-dark)}
+  .wrap{max-width:1040px; margin:0 auto; padding:0 20px}
+
+  /* Hero */
+  .hero{background:linear-gradient(135deg,var(--teal) 0%,var(--teal-dark) 100%); color:#fff; padding:56px 0 48px}
+  .hero h1{margin:0 0 .4rem; font-size:2.2rem; font-weight:700; letter-spacing:-.01em; line-height:1.15}
+  .hero p.sub{margin:0 0 1.1rem; color:#D7EAEA; font-size:1.05rem}
+  .tags{display:flex; gap:.5rem; flex-wrap:wrap}
+  .tag{background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.28); color:#EAF5F5;
+       padding:.25rem .7rem; font-size:.8rem; font-weight:500}
+  .cta{margin-top:1.4rem; display:flex; gap:.6rem; flex-wrap:wrap}
+  .btn{display:inline-block; padding:.6rem 1.1rem; font-weight:650; text-decoration:none; border:1px solid transparent}
+  .btn-primary{background:#fff; color:var(--teal-dark)}
+  .btn-ghost{background:transparent; color:#fff; border-color:rgba(255,255,255,.5)}
+
+  section{padding:42px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:1.45rem; margin:0 0 .2rem; border-left:4px solid var(--teal); padding-left:.6rem; font-weight:650}
+  h2 + p.lead{color:var(--muted); margin:.2rem 0 1.4rem; padding-left:.7rem}
+
+  table{border-collapse:collapse; width:100%; font-size:.93rem}
+  th,td{border:1px solid var(--line); padding:.5rem .7rem; text-align:left}
+  th{background:var(--soft); font-weight:650}
+  .center td,.center th{text-align:center}
+
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px}
+  .card{border:1px solid var(--line); padding:1rem 1.1rem; background:#fff}
+  .card h3{margin:0 0 .35rem; font-size:1.02rem; color:var(--teal-dark)}
+  .card p{margin:0; color:var(--muted); font-size:.92rem}
+
+  .note{background:var(--soft); border:1px solid var(--line); border-left:4px solid var(--teal); padding:1rem 1.1rem}
+  code,pre{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.88rem}
+  pre{background:#0B2B2B; color:#E8F1F1; padding:1rem 1.1rem; overflow:auto}
+  pre code{color:inherit}
+  .sched td.work{background:var(--tint); font-weight:600; text-align:center}
+  .sched td.off{color:#9aa0a6; text-align:center}
+  .sched td.sat{background:#fff}
+  .small{font-size:.85rem; color:var(--muted)}
+  footer{padding:28px 0 48px; color:var(--muted); font-size:.9rem}
+  ul.tight{margin:.3rem 0 0; padding-left:1.2rem}
+  ul.tight li{margin:.25rem 0}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <h1>Pediatric Dialysis Unit Scheduler</h1>
+    <p class="sub">BC Children's Hospital &middot; Hemodialysis &middot; BCNU Provincial Collective Agreement (Art. 25–26)</p>
+    <div class="tags">
+      <span class="tag">Constraint-solver (OR-Tools CP-SAT)</span>
+      <span class="tag">Contract-compliant by construction</span>
+      <span class="tag">Three optimized options</span>
+      <span class="tag">Excel export</span>
+    </div>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/adamnellesboulton-design/scheduling">View the code</a>
+      <a class="btn btn-ghost" href="#run">Run the app</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <p>This is a decision-support tool that builds an equitable, compliant master work
+    schedule for the pediatric hemodialysis unit and exports it as a clean,
+    print-ready Excel workbook. It treats each nurse's requested shift counts and
+    every contract rule as <strong>hard</strong> constraints, then optimizes fairness,
+    preferences and clustering as <strong>soft</strong> goals — producing three genuinely
+    different but equally-compliant options to choose from.</p>
+    <p class="small">This page is an overview. The interactive app is a Python/Streamlit
+    program — see <a href="#run">Run the app</a> for how to launch it.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>The unit at a glance</h2>
+    <p class="lead">A single day shift, four operating days a week. The rotation anchors to Friday by default (selectable).</p>
+    <table>
+      <thead><tr><th>Day</th><th>Shift</th><th>Hours</th><th>Paid</th></tr></thead>
+      <tbody>
+        <tr><td>Mon / Wed / Fri</td><td><strong>D10</strong> &nbsp;07:30–17:30</td><td>10.0 h</td><td>9.5 h (30-min unpaid meal)</td></tr>
+        <tr><td>Saturday</td><td><strong>D5</strong> &nbsp;07:30–12:30</td><td>5.0 h</td><td>5.0 h</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="lead">Guaranteed in every option, before any preference is weighed.</p>
+    <div class="grid">
+      <div class="card"><h3>Exact shift counts</h3><p>Each nurse works exactly their requested D10 and D5 counts — never more, never fewer.</p></div>
+      <div class="card"><h3>Contract-aware</h3><p>The ≤ 6 Saturdays per 9-week weekend cap (25.06(E)), max-consecutive-days, meal/rest periods and the 6-week posting lead time are all modeled and cited.</p></div>
+      <div class="card"><h3>Three options</h3><p>Preference-, Equity- and Cluster-maximizing — same counts and rules, different arrangement. Pick the trade-off you like.</p></div>
+      <div class="card"><h3>Per-nurse guarantees</h3><p>Opt-in hard ticks: Mon/Wed/Fri off, work-every-week, Friday-before-Saturday. Soft preferences for off-days, even spread, spaced Saturdays and clustering.</p></div>
+      <div class="card"><h3>Hand-tune safely</h3><p>Click-to-edit the grid or swap two shifts; everything re-validates live, and "reoptimize to fit" keeps a tricky change compliant with minimal disruption.</p></div>
+      <div class="card"><h3>Clean Excel out</h3><p>A four-sheet workbook (Schedule, Summary, Compliance, Config) that prints black-and-white; colour flags problems only.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>A sample week</h2>
+    <p class="lead">Illustrative — five nurses over one rotation week (D10 = weekday, D5 = Saturday).</p>
+    <table class="sched center">
+      <thead><tr><th>Nurse</th><th>Fri</th><th>Sat</th><th>Mon</th><th>Wed</th></tr></thead>
+      <tbody>
+        <tr><td style="text-align:left">Kathleen</td><td class="work">D10</td><td class="work sat">D5</td><td class="off">—</td><td class="work">D10</td></tr>
+        <tr><td style="text-align:left">Adam</td><td class="work">D10</td><td class="off sat">—</td><td class="work">D10</td><td class="work">D10</td></tr>
+        <tr><td style="text-align:left">Joane</td><td class="off">—</td><td class="work sat">D5</td><td class="work">D10</td><td class="off">—</td></tr>
+        <tr><td style="text-align:left">Leslie</td><td class="work">D10</td><td class="off sat">—</td><td class="work">D10</td><td class="off">—</td></tr>
+        <tr><td style="text-align:left">Kaitlyn</td><td class="off">—</td><td class="off sat">—</td><td class="off">—</td><td class="work">D10</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>How the solver decides</h2>
+    <p class="lead">Two layers — knowing them lets you explain any cell in the grid.</p>
+    <ul class="tight">
+      <li><strong>Layer 1 — the fixed schedule</strong> (identical in all three options): exact counts, daily coverage where the roster allows, the Saturday rules, job-share separation, unavailability, and any ticked hard guarantees. This already pins down most of the grid.</li>
+      <li><strong>Layer 2 — the arrangement</strong> (the only thing that differs): each option weights up one goal — honour ticked <em>preferences</em>, balance the week for <em>equity</em>, or <em>cluster</em> shifts into longer blocks off.</li>
+    </ul>
+    <p class="small">Full technical specification, weights and contract mapping live in
+    <a href="https://github.com/adamnellesboulton-design/scheduling/blob/main/SOLVER.md">SOLVER.md</a>.</p>
+  </div>
+</section>
+
+<section id="run">
+  <div class="wrap">
+    <h2>Run the app</h2>
+    <p class="lead">The interactive scheduler is a Python/Streamlit app with an OR-Tools solver.</p>
+    <div class="note">
+      <strong>GitHub Pages hosts this overview only.</strong> The live app needs a Python
+      server and the OR-Tools (CP-SAT) library, which can't run as a static page in the
+      browser. Run it locally, or deploy it free to a Python host such as
+      <a href="https://streamlit.io/cloud">Streamlit Community Cloud</a>.
+    </div>
+    <p style="margin-top:1.2rem"><strong>Locally:</strong></p>
+    <pre><code>git clone https://github.com/adamnellesboulton-design/scheduling.git
+cd scheduling
+pip install -r requirements.txt
+streamlit run app.py</code></pre>
+    <p class="small">Requires Python 3.11+. Then open the URL Streamlit prints (usually
+    <code>http://localhost:8501</code>).</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    BC Children's Hospital · Pediatric Dialysis Unit Scheduler &nbsp;·&nbsp;
+    <a href="https://github.com/adamnellesboulton-design/scheduling">github.com/adamnellesboulton-design/scheduling</a>
+    <br><span class="small">A decision-support tool. Generated schedules require human review and steward/manager sign-off; article numbers should be confirmed against your current agreement.</span>
+  </div>
+</footer>
+
+</body>
+</html>
